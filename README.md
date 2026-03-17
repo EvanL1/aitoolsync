@@ -27,31 +27,36 @@ Maintaining 7 copies of the same rules is insane. `agentsync` reads from one `.a
 
 ## Install
 
-### macOS / Linux
+### Cargo (all platforms)
 
 ```bash
-# Homebrew (coming soon)
+cargo install --git https://github.com/EvanL1/agentsync
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap EvanL1/agentsync
 brew install agentsync
-
-# Or download binary
-curl -fsSL https://github.com/anthropics/agentsync/releases/latest/download/agentsync-$(uname -s)-$(uname -m).tar.gz | tar xz
-sudo mv agentsync /usr/local/bin/
 ```
 
-### Windows
-
-```powershell
-# Scoop (coming soon)
-scoop install agentsync
-
-# Or download from Releases page
-```
-
-### From source
+### Shell script (macOS / Linux / WSL)
 
 ```bash
-cargo install --git https://github.com/anthropics/agentsync
+curl -fsSL https://raw.githubusercontent.com/EvanL1/agentsync/master/install.sh | bash
 ```
+
+### Manual download
+
+Download from [Releases](https://github.com/EvanL1/agentsync/releases):
+
+| Platform | File |
+|----------|------|
+| macOS Apple Silicon | `agentsync-darwin-aarch64.tar.gz` |
+| macOS Intel | `agentsync-darwin-x86_64.tar.gz` |
+| Linux x86_64 | `agentsync-linux-x86_64.tar.gz` |
+| Linux ARM64 | `agentsync-linux-aarch64.tar.gz` |
+| Windows x64 | `agentsync-windows-x86_64.zip` |
 
 ## Quick Start
 
@@ -153,7 +158,7 @@ No git repos, no npm, no config files, no runtime dependencies. Just a single bi
 ## Contributing
 
 ```bash
-git clone https://github.com/anthropics/agentsync
+git clone https://github.com/EvanL1/agentsync
 cd agentsync
 cargo build
 cargo test

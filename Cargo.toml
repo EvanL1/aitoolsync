@@ -3,7 +3,7 @@ name = "agentsync"
 version = "0.1.0"
 edition = "2021"
 description = "Sync AI agent configs across Claude Code, Codex, Gemini CLI, Cursor, Copilot — one source, all platforms"
-license = "MIT"
+repository = "https://github.com/EvanL1/agentsync"
 keywords = ["ai", "agent", "sync", "claude", "codex"]
 categories = ["command-line-utilities", "development-tools"]
 
