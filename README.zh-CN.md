@@ -44,6 +44,13 @@ npm install -g aitoolsync
 cargo install --git https://github.com/EvanL1/aitoolsync
 ```
 
+### Homebrew（macOS / Linux）
+
+```bash
+brew tap EvanL1/aitoolsync
+brew install aisync
+```
+
 ### Shell 脚本（macOS / Linux / WSL）
 
 ```bash
