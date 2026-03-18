@@ -1,10 +1,14 @@
 [package]
-name = "aisync"
+name = "aitoolsync"
 version = "0.2.0"
 edition = "2021"
 description = "Sync AI agent configs across Claude Code, Codex, Gemini CLI, Cursor, Copilot — one source, all platforms"
-repository = "https://github.com/EvanL1/aisync"
+repository = "https://github.com/EvanL1/aitoolsync"
 keywords = ["ai", "agent", "sync", "claude", "codex"]
 categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "aisync"
+path = "src/main.rs"
 
 [dependencies]

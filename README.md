@@ -1,6 +1,6 @@
-# aisync
+# aitoolsync
 
-[![CI](https://github.com/EvanL1/aisync/actions/workflows/ci.yml/badge.svg)](https://github.com/EvanL1/aisync/actions/workflows/ci.yml)
+[![CI](https://github.com/EvanL1/aitoolsync/actions/workflows/ci.yml/badge.svg)](https://github.com/EvanL1/aitoolsync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 English | [中文](README.zh-CN.md)
@@ -30,31 +30,31 @@ You maintain `CLAUDE.md` for Claude Code, `.cursorrules` for Cursor, `copilot-in
 ### npm (recommended)
 
 ```bash
-npm install -g aisync
+npm install -g aitoolsync
 ```
 
 ### Cargo (all platforms)
 
 ```bash
-cargo install --git https://github.com/EvanL1/aisync
+cargo install --git https://github.com/EvanL1/aitoolsync
 ```
 
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap EvanL1/aisync
+brew tap EvanL1/aitoolsync
 brew install aisync
 ```
 
 ### Shell script (macOS / Linux / WSL)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanL1/aisync/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EvanL1/aitoolsync/master/install.sh | bash
 ```
 
 ### Manual download
 
-Download from [Releases](https://github.com/EvanL1/aisync/releases):
+Download from [Releases](https://github.com/EvanL1/aitoolsync/releases):
 
 | Platform | File |
 |----------|------|
@@ -138,7 +138,7 @@ aisync platforms               # List supported platforms
 
 ## Should I commit the generated files?
 
-**Yes.** Commit both `.agents/` (your source of truth) and the generated platform files (`.claude/`, `.cursor/`, `.github/`, etc.). They're all just markdown — no binaries, no build artifacts. This way, every teammate and CI environment gets the right configs without needing to install aisync.
+**Yes.** Commit both `.agents/` (your source of truth) and the generated platform files (`.claude/`, `.cursor/`, `.github/`, etc.). They're all just markdown — no binaries, no build artifacts. This way, every teammate and CI environment gets the right configs without needing to install aitoolsync.
 
 ## How It Works
 
@@ -151,7 +151,7 @@ No git hooks, no npm, no config files, no runtime dependencies. Just a single bi
 
 ## vs Alternatives
 
-| | aisync | aisync-sync | manual copy |
+| | aitoolsync | ai-rules-sync | manual copy |
 |---|---|---|---|
 | Dependencies | **None** (single binary) | Node.js + npm | N/A |
 | Config needed | **Zero** | git repo + JSON | N/A |
@@ -162,8 +162,8 @@ No git hooks, no npm, no config files, no runtime dependencies. Just a single bi
 ## Contributing
 
 ```bash
-git clone https://github.com/EvanL1/aisync
-cd aisync
+git clone https://github.com/EvanL1/aitoolsync
+cd aitoolsync
 cargo build
 cargo test
 ```

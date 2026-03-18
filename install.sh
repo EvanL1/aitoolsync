@@ -2,7 +2,7 @@
 # aisync installer — auto-detect platform, download, install
 set -e
 
-REPO="EvanL1/aisync"
+REPO="EvanL1/aitoolsync"
 INSTALL_DIR="/usr/local/bin"
 
 OS=$(uname -s)

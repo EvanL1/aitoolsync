@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 
-const REPO = "EvanL1/aisync";
+const REPO = "EvanL1/aitoolsync";
 const BIN_DIR = path.join(__dirname, "bin");
 const BIN_NAME = process.platform === "win32" ? "aisync.exe" : "aisync";
 const BIN_PATH = path.join(BIN_DIR, BIN_NAME);

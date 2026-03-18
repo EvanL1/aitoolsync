@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "aisync"
+name = "aitoolsync"
 version = "0.2.0"

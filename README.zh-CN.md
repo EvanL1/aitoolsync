@@ -1,6 +1,6 @@
-# aisync
+# aitoolsync
 
-[![CI](https://github.com/EvanL1/aisync/actions/workflows/ci.yml/badge.svg)](https://github.com/EvanL1/aisync/actions/workflows/ci.yml)
+[![CI](https://github.com/EvanL1/aitoolsync/actions/workflows/ci.yml/badge.svg)](https://github.com/EvanL1/aitoolsync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [English](README.md) | 中文
@@ -30,31 +30,31 @@
 ### npm（推荐）
 
 ```bash
-npm install -g aisync
+npm install -g aitoolsync
 ```
 
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/EvanL1/aisync
+cargo install --git https://github.com/EvanL1/aitoolsync
 ```
 
 ### Homebrew（macOS / Linux）
 
 ```bash
-brew tap EvanL1/aisync
+brew tap EvanL1/aitoolsync
 brew install aisync
 ```
 
 ### Shell 脚本（macOS / Linux / WSL）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EvanL1/aisync/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EvanL1/aitoolsync/master/install.sh | bash
 ```
 
 ### 手动下载
 
-从 [Releases](https://github.com/EvanL1/aisync/releases) 下载：
+从 [Releases](https://github.com/EvanL1/aitoolsync/releases) 下载：
 
 | 平台 | 文件 |
 |------|------|
@@ -138,7 +138,7 @@ aisync platforms               # 列出支持的平台
 
 ## 生成的文件需要提交吗？
 
-**需要。** 同时提交 `.agents/`（你的源文件）和生成的平台配置文件（`.claude/`、`.cursor/`、`.github/` 等）。它们都只是 markdown 文件——没有二进制文件，没有构建产物。这样每个团队成员和 CI 环境都能拿到正确的配置，无需安装 aisync。
+**需要。** 同时提交 `.agents/`（你的源文件）和生成的平台配置文件（`.claude/`、`.cursor/`、`.github/` 等）。它们都只是 markdown 文件——没有二进制文件，没有构建产物。这样每个团队成员和 CI 环境都能拿到正确的配置，无需安装 aitoolsync。
 
 ## 工作原理
 
@@ -151,7 +151,7 @@ aisync platforms               # 列出支持的平台
 
 ## 对比
 
-| | aisync | aisync-sync |
+| | aitoolsync | ai-rules-sync |
 |---|---|---|
 | 依赖 | **零**（单一二进制） | Node.js + npm |
 | 需要配置 | **零** | git 仓库 + JSON |
@@ -162,8 +162,8 @@ aisync platforms               # 列出支持的平台
 ## 参与贡献
 
 ```bash
-git clone https://github.com/EvanL1/aisync
-cd aisync
+git clone https://github.com/EvanL1/aitoolsync
+cd aitoolsync
 cargo build
 cargo test
 ```

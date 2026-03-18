@@ -1,13 +1,13 @@
 {
-  "name": "aisync",
+  "name": "aitoolsync",
   "version": "0.2.0",
   "description": "One command to sync AI agent configs across Claude Code, Codex, Gemini CLI, Cursor, Copilot, Windsurf, and Cline",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/EvanL1/aisync"
+    "url": "https://github.com/EvanL1/aitoolsync"
   },
-  "homepage": "https://github.com/EvanL1/aisync",
+  "homepage": "https://github.com/EvanL1/aitoolsync",
   "keywords": [
     "ai",
     "agent",
