@@ -102,6 +102,12 @@ fn sync_platform(project_dir: &Path, source: &Path, platform: &Platform, dry_run
         }
     }
 
+    // 5. Platform-specific extras
+    let extras_src = source.join("platforms").join(platform.name);
+    if extras_src.is_dir() {
+        result.files_synced += sync_extras(&extras_src, &target_base, platform, &mut result.errors, dry_run);
+    }
+
     result
 }
 
@@ -287,6 +293,12 @@ pub fn sync_user(home: &Path, source: &Path) -> Vec<SyncResult> {
             }
         }
 
+        // Platform-specific extras
+        let extras_src = source.join("platforms").join(platform.name);
+        if extras_src.is_dir() {
+            result.files_synced += sync_extras(&extras_src, &user_dir, platform, &mut result.errors, false);
+        }
+
         if result.files_synced > 0 {
             results.push(result);
         }
@@ -365,6 +377,29 @@ pub fn import_from(project_dir: &Path, platform_name: &str) -> Result<usize, Str
         if agents_dir.is_dir() {
             count += import_md_files(&agents_dir, &source.join("agents"))
                 .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Import platform-specific extra files and dirs
+    if !platform.extra_files.is_empty() || !platform.extra_dirs.is_empty() {
+        let extras_dest = source.join("platforms").join(platform.name);
+        fs::create_dir_all(&extras_dest).map_err(|e| e.to_string())?;
+
+        for file in platform.extra_files {
+            let src_file = platform_dir.join(file);
+            if src_file.exists() {
+                let dest_file = extras_dest.join(file);
+                fs::copy(&src_file, &dest_file).map_err(|e| e.to_string())?;
+                count += 1;
+            }
+        }
+
+        for dir in platform.extra_dirs {
+            let src_dir = platform_dir.join(dir);
+            if src_dir.is_dir() {
+                count += copy_dir_all(&src_dir, &extras_dest.join(dir))
+                    .map_err(|e| e.to_string())?;
+            }
         }
     }
 
@@ -455,6 +490,68 @@ pub fn init_source(project_dir: &Path) -> std::io::Result<PathBuf> {
         fs::write(&agents_md, INIT_TEMPLATE)?;
     }
     Ok(source)
+}
+
+/// Sync platform-specific extra files and dirs from .agents/platforms/<name>/
+fn sync_extras(extras_src: &Path, target: &Path, platform: &Platform, errors: &mut Vec<String>, dry_run: bool) -> usize {
+    let mut count = 0;
+
+    for file in platform.extra_files {
+        let src = extras_src.join(file);
+        if src.exists() {
+            let dest = target.join(file);
+            if dry_run {
+                count += 1;
+            } else {
+                match ensure_copy(&src, &dest) {
+                    Ok(_) => count += 1,
+                    Err(e) => errors.push(format!("{file}: {e}")),
+                }
+            }
+        }
+    }
+
+    for dir in platform.extra_dirs {
+        let src = extras_src.join(dir);
+        if src.is_dir() {
+            if dry_run {
+                count += 1;
+            } else {
+                match copy_dir_all(&src, &target.join(dir)) {
+                    Ok(n) => count += n,
+                    Err(e) => errors.push(format!("{dir}/: {e}")),
+                }
+            }
+        }
+    }
+
+    count
+}
+
+/// Directories to skip when copying extras (build artifacts, caches, etc.)
+const SKIP_DIRS: &[&str] = &[
+    "node_modules", "target", ".git", "cache", "__pycache__",
+    ".cache", "dist", "build", ".next",
+];
+
+/// Recursively copy all files in a directory (any type, not just .md)
+fn copy_dir_all(src: &Path, dest: &Path) -> std::io::Result<usize> {
+    fs::create_dir_all(dest)?;
+    let mut count = 0;
+    for entry in fs::read_dir(src)?.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if path.is_dir() {
+            if SKIP_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            count += copy_dir_all(&path, &dest.join(name.as_ref()))?;
+        } else {
+            fs::copy(&path, &dest.join(name.as_ref()))?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn ensure_copy(src: &Path, dest: &Path) -> std::io::Result<()> {

@@ -24,6 +24,10 @@ pub struct Platform {
     pub skills_as_dir: bool,              // true = <name>/SKILL.md directory format
     pub agents_dir: Option<&'static str>, // subdirectory for agents
 
+    // Platform-specific extra configs (stored in .agents/platforms/<name>/)
+    pub extra_files: &'static [&'static str],  // individual files: settings.json, .mcp.json
+    pub extra_dirs: &'static [&'static str],   // directories: hooks/, plugins/, output-styles/
+
     // User-level (global) directory
     pub user_dir: Option<&'static str>,   // ~/.claude, ~/.codex, ~/.gemini, etc.
     pub user_root_md: Option<&'static str>, // root md filename in user dir (may differ)
@@ -34,6 +38,7 @@ pub const PLATFORMS: &[Platform] = &[
     // CLAUDE.md at project root, .claude/{rules,skills,agents}/*.md
     // Skills: .claude/skills/<name>/SKILL.md (directory per skill, replaces legacy commands/)
     // User: ~/.claude/CLAUDE.md, ~/.claude/{rules,skills,agents}/
+    // Extra: settings.json, .mcp.json, hooks/, plugins/, output-styles/
     Platform {
         name: "claude",
         root_md: "CLAUDE.md",
@@ -45,6 +50,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: Some("skills"),       // was "commands" (legacy), now "skills"
         skills_as_dir: true,              // skills/<name>/SKILL.md
         agents_dir: Some("agents"),
+        extra_files: &["settings.json", ".mcp.json"],
+        extra_dirs: &["hooks", "plugins", "output-styles"],
         user_dir: Some("~/.claude"),
         user_root_md: Some("CLAUDE.md"),
     },
@@ -64,6 +71,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: Some("skills"),
         skills_as_dir: true,              // skills/<name>/SKILL.md
         agents_dir: None,
+        extra_files: &[],
+        extra_dirs: &[],
         user_dir: Some("~/.codex"),
         user_root_md: Some("AGENTS.md"),
     },
@@ -83,6 +92,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: Some("skills"),
         skills_as_dir: true,              // skills/<name>/SKILL.md
         agents_dir: None,
+        extra_files: &[],
+        extra_dirs: &[],
         user_dir: Some("~/.gemini"),
         user_root_md: Some("GEMINI.md"),
     },
@@ -102,6 +113,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: None,
         skills_as_dir: false,
         agents_dir: None,
+        extra_files: &[],
+        extra_dirs: &[],
         user_dir: Some("~/.cursor"),
         user_root_md: None,
     },
@@ -120,6 +133,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: None,
         skills_as_dir: false,
         agents_dir: None,
+        extra_files: &[],
+        extra_dirs: &[],
         user_dir: None,
         user_root_md: None,
     },
@@ -139,6 +154,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: None,
         skills_as_dir: false,
         agents_dir: None,
+        extra_files: &[],
+        extra_dirs: &[],
         user_dir: Some("~/.codeium/windsurf"),
         user_root_md: None,
     },
@@ -157,6 +174,8 @@ pub const PLATFORMS: &[Platform] = &[
         skills_dir: None,                // TODO: .cline/skills/ (different base dir)
         skills_as_dir: false,
         agents_dir: None,
+        extra_files: &[],
+        extra_dirs: &[],
         user_dir: Some("~/.cline"),
         user_root_md: None,
     },

@@ -1,6 +1,6 @@
 [package]
 name = "aitoolsync"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "Sync AI agent configs across Claude Code, Codex, Gemini CLI, Cursor, Copilot — one source, all platforms"
 repository = "https://github.com/EvanL1/aitoolsync"
