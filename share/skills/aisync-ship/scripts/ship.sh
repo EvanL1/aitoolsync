@@ -322,7 +322,11 @@ print_deletion_preview() {
       log "  [$ssub] no marker-deletions (remote marker matches new managed set)"
       continue
     fi
-    local count; count=$(printf '%s\n' "$diff_output" | grep -c '^.')
+    # `grep -c` exits 1 when 0 matches → pipefail + set -e would kill the
+    # script. `|| true` swallows that even though here we only get here
+    # when diff_output is non-empty (defensive — same bug class as
+    # post_smoke's grep -v | head pipeline).
+    local count; count=$(printf '%s\n' "$diff_output" | grep -c '^.' || true)
     log "  [$ssub] will marker-delete $count entry/entries on remote:"
     local shown=0
     printf '%s\n' "$diff_output" | while IFS= read -r rel; do
@@ -418,30 +422,34 @@ cleanup_stage() {
 post_smoke() {
   local cmds=(claude)
   if [[ -n "$ALSO_PLATFORMS" ]]; then
-    local OLD_IFS="$IFS"; IFS=','
-    for plat in $ALSO_PLATFORMS; do
-      IFS="$OLD_IFS"
+    local plat
+    # Replace commas with spaces — avoids fiddling with IFS (interacts
+    # with set -e in subtle ways).
+    for plat in ${ALSO_PLATFORMS//,/ }; do
       case "$plat" in
         codex|gemini) cmds+=("$plat") ;;
         cursor|windsurf|cline) ;;
         *) warn "smoke-test: unknown platform '$plat', skipping" ;;
       esac
-      OLD_IFS="$IFS"; IFS=','
     done
-    IFS="$OLD_IFS"
   fi
   log "smoke test: ${cmds[*]} on $TARGET"
   local cmd out first
   for cmd in "${cmds[@]}"; do
+    # IMPORTANT: post_smoke must NEVER fail the script — install already
+    # succeeded by the time we get here. Two pipefail traps to defang:
+    #   1. ssh exits non-zero when the binary is missing → the if/else
+    #      handles it (already correct).
+    #   2. grep -v setlocale may match nothing (all output is setlocale
+    #      noise) → grep exits 1 → pipefail kills the assignment → set -e
+    #      kills ship.sh. The `|| true` swallows that case.
     if out=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" \
                   "$cmd --version 2>&1" 2>&1); then
-      # Strip bash setlocale warnings (and any blank lines) so the first
-      # surviving line is the actual --version output.
-      first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1)
+      first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1 || true)
       [[ -n "$first" ]] || first="(empty output)"
       log "  ✓ $cmd: $first"
     else
-      first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1)
+      first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1 || true)
       [[ -n "$first" ]] || first="(no error output)"
       warn "  ✗ $cmd: not present or errored ($first)"
     fi
