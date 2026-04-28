@@ -110,11 +110,25 @@ install_one() {
 $dest|$backup|$mode"
 
   # Snapshot or move-aside dest (skip if dest didn't exist).
+  #
+  # CRITICAL for merge mode: write the snapshot to a `.partial` path first
+  # and rename it to the final backup path only after cp completes. Reason:
+  # cp -aR is non-atomic; a mid-cp failure leaves a half-populated dir at
+  # the target. If that half-populated dir lived at the final backup path,
+  # restore_all's `[ -d backup ]` check would treat it as a valid snapshot
+  # and `rm dest && mv backup dest` would replace the user's data with a
+  # partial copy. The atomic rename ensures the final backup path either
+  # holds a complete snapshot or doesn't exist at all.
+  #
+  # mv (replace mode) is already a single rename syscall on the same fs,
+  # so it's intrinsically atomic — no .partial dance needed.
   if [ -n "$backup" ]; then
     if [ "$mode" = "merge" ]; then
-      cp -aR "$dest" "$backup"      # keep dest in place, copy aside
+      backup_partial="$backup.partial"
+      cp -aR "$dest" "$backup_partial"
+      mv "$backup_partial" "$backup"
     else
-      mv "$dest" "$backup"          # move dest aside, leaving slot empty
+      mv "$dest" "$backup"
     fi
   fi
 
