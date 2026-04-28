@@ -47,55 +47,27 @@ restore_all() {
     printf '%s\n' "$applied_pairs" | awk 'NF' \
       | while IFS='|' read -r dest backup mode; do
           if [ -n "$backup" ] && [ -d "$backup" ]; then
-            # dest pre-existed — restore from backup
+            # backup snapshot exists → restore (covers replace AND merge,
+            # whether the destructive step succeeded fully or partially)
             rm -rf "$dest"
             mv "$backup" "$dest"
             printf 'install-remote: restored %s (%s)\n' "$dest" "$mode" >&2
-          elif [ -d "$dest" ]; then
-            # dest was newly created during this transaction — remove it
+          elif [ -z "$backup" ] && [ -d "$dest" ]; then
+            # backup="" means dest did NOT pre-exist; anything we find at
+            # dest now was created by this transaction → safe to remove
             rm -rf "$dest"
             printf 'install-remote: removed newly-created %s (%s)\n' "$dest" "$mode" >&2
+          else
+            # backup was supposed to exist but is missing — backup snapshot
+            # itself failed before completing. Leave dest alone (user data
+            # may still be intact) and surface the situation.
+            printf 'install-remote: cannot rollback %s (backup %s missing)\n' "$dest" "$backup" >&2
           fi
         done
   fi
   exit "$rc"
 }
 trap restore_all EXIT HUP INT TERM
-
-# Returns the backup path (or "" if dest didn't pre-exist). On invocation,
-# dest is moved/copied aside so install_replace/merge can write into dest.
-take_backup() {
-  dest="$1"
-  mode="$2"
-  if [ ! -e "$dest" ]; then
-    printf ''
-    return
-  fi
-  backup="$dest.bak.$stamp"
-  [ -e "$backup" ] && backup="$backup.$$"
-  if [ "$mode" = "merge" ]; then
-    # snapshot: keep dest in place, copy aside
-    cp -aR "$dest" "$backup"
-  else
-    # replace: move dest aside, leaving slot empty
-    mv "$dest" "$backup"
-  fi
-  printf '%s' "$backup"
-}
-
-install_replace() {
-  staged="$1"; dest="$2"
-  mkdir -p "$(dirname "$dest")"
-  mv "$staged" "$dest"
-}
-
-install_merge() {
-  staged="$1"; dest="$2"
-  mkdir -p "$dest"
-  # Overlay staged contents into dest, preserving any dest files not in staged.
-  # cp -aR with /. trailing copies CONTENTS rather than the dir itself.
-  cp -aR "$staged/." "$dest/"
-}
 
 install_one() {
   stage_sub="$1"
@@ -122,16 +94,40 @@ install_one() {
     printf 'install-remote: preserved existing remote .credentials.json\n' >&2
   fi
 
-  backup=$(take_backup "$dest" "$mode")
-  if [ "$mode" = "merge" ]; then
-    install_merge "$staged" "$dest"
-  else
-    install_replace "$staged" "$dest"
+  # Decide backup path WITHOUT creating it yet.
+  backup=""
+  if [ -e "$dest" ]; then
+    backup="$dest.bak.$stamp"
+    [ -e "$backup" ] && backup="$backup.$$"
   fi
-  [ -f "$dest/.credentials.json" ] && chmod 600 "$dest/.credentials.json"
 
+  # CRITICAL: record the rollback entry BEFORE any destructive operation.
+  # If snapshot/cp/mv fails partway through, restore_all uses this entry to
+  # undo whatever partial state was left behind. If we recorded after the
+  # operation, a mid-op failure (set -e exits before append) would leave
+  # the rollback log empty for this entry → orphan backup + half-merged dest.
   applied_pairs="$applied_pairs
 $dest|$backup|$mode"
+
+  # Snapshot or move-aside dest (skip if dest didn't exist).
+  if [ -n "$backup" ]; then
+    if [ "$mode" = "merge" ]; then
+      cp -aR "$dest" "$backup"      # keep dest in place, copy aside
+    else
+      mv "$dest" "$backup"          # move dest aside, leaving slot empty
+    fi
+  fi
+
+  # Apply staged content.
+  if [ "$mode" = "merge" ]; then
+    mkdir -p "$dest"
+    cp -aR "$staged/." "$dest/"     # overlay (preserves dest's other files)
+  else
+    mkdir -p "$(dirname "$dest")"
+    mv "$staged" "$dest"            # atomic swap
+  fi
+
+  [ -f "$dest/.credentials.json" ] && chmod 600 "$dest/.credentials.json"
   printf 'install-remote: installed %s mode=%s backup=%s\n' "$dest" "$mode" "${backup:-<none>}" >&2
 }
 
