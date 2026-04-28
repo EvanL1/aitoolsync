@@ -101,8 +101,9 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 - DO NOT skip credentials extraction on macOS — Keychain entries are NOT in the filesystem; without `security find-generic-password`, the remote will have no auth.
 - DO NOT assume target has rsync — use the `tar | ssh tar` pipe in `ship.sh`.
 - DO NOT push to a remote `~/.claude` without backing up — `ship.sh` does this automatically; if you bypass the script, replicate the backup.
-- DO NOT ship credentials by default. The user's preference is to `claude login` on each machine independently. Only pass `--include-credentials` when the user explicitly asks ("把凭证也带过去" / "include creds").
-- DO NOT ship `.credentials.json` from the local filesystem on macOS — it is a stale empty stub; the truth lives in Keychain.
+- DO NOT ship credentials by default. The user's standing preference is to `claude login` on each machine independently. Only pass `--include-credentials` when the user explicitly asks ("把凭证也带过去" / "include creds").
+- DO NOT shell out to `extract-credentials.sh` or copy `~/.claude/.credentials.json` "just in case" — the per-machine login model is the contract. If you bypass `--include-credentials` you violate user preference.
+- (Historical note: an earlier draft of this doc said "DO NOT skip credentials extraction on macOS." That guidance was reversed once the per-machine login policy was set. Trust the current default.)
 
 ## Cross-tool fan-out (A and C scenarios)
 

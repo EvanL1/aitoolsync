@@ -28,13 +28,51 @@ from typing import Any
 SWEATSHOP_RE = re.compile(r"/Users/[^/]+/dev/sweatshop(/|\b)")
 LOCALHOST_RE = re.compile(r"://(127\.0\.0\.1|localhost)(:|/|$)")
 
+# Absolute paths that exist on macOS but not on Linux. Anything containing
+# these is a hard signal the entry will not work on the remote.
+MACOS_ONLY_PATH_RES = [
+    re.compile(r"/opt/homebrew(/|\b)"),
+    re.compile(r"/Applications/"),
+    re.compile(r"/Library/"),
+    re.compile(r"/System/"),
+    re.compile(r"/usr/local/Cellar(/|\b)"),  # legacy Intel brew
+]
+
+# Absolute paths under /Users/<u>/... that are NOT inside the user's HOME-shaped
+# subset we expect to also exist on the remote. Used to scan for "likely broken
+# after path-rewrite" — we WARN (do not strip) so the user can decide.
+LIKELY_LOCAL_RE = re.compile(r"/Users/[^/]+/(?!\.claude/|\.codex/|\.gemini/|\.cursor/|\.codeium/|\.cline/|\.local/)")
+
+
+def is_sweatshop_path(s: str) -> bool:
+    """Strict-strip pattern: known-bad sweatshop bridge."""
+    return bool(SWEATSHOP_RE.search(s or ""))
+
+
+def is_macos_only_path(s: str) -> bool:
+    """Strict-strip pattern: paths that cannot exist on a Linux remote."""
+    return any(r.search(s or "") for r in MACOS_ONLY_PATH_RES)
+
 
 def is_local_command(cmd: str) -> bool:
-    return bool(SWEATSHOP_RE.search(cmd or ""))
+    """Should this hook command be DROPPED entirely?"""
+    return is_sweatshop_path(cmd) or is_macos_only_path(cmd)
 
 
 def is_localhost_url(url: str) -> bool:
     return bool(LOCALHOST_RE.search(url or ""))
+
+
+def scan_likely_local(value: str, where: str, log: list) -> None:
+    """Walk a string value, warn (not strip) on absolute paths that look
+    machine-specific and that path-rewrite would *not* fix correctly."""
+    if not isinstance(value, str):
+        return
+    if is_sweatshop_path(value) or is_macos_only_path(value):
+        # already handled by drop logic — no warn needed
+        return
+    if LIKELY_LOCAL_RE.search(value):
+        log.append(f"  WARN ({where}): possibly machine-specific path: {value[:120]}")
 
 
 def hook_should_drop(h: dict, opts: argparse.Namespace) -> tuple[bool, str]:
@@ -53,19 +91,23 @@ def hook_should_drop(h: dict, opts: argparse.Namespace) -> tuple[bool, str]:
 def filter_hook_groups(groups: list, opts: argparse.Namespace, log: list) -> list:
     out = []
     for group in groups:
+        matcher = group.get("matcher", "?")
         kept = []
         for h in group.get("hooks", []):
             drop, reason = hook_should_drop(h, opts)
             if drop:
-                log.append(f"    drop hook (matcher={group.get('matcher','?')}): {reason}")
-            else:
-                kept.append(h)
+                log.append(f"    drop hook (matcher={matcher}): {reason}")
+                continue
+            # Warn-only scan: kept hooks may still reference machine-specific paths.
+            if h.get("type") == "command":
+                scan_likely_local(h.get("command", ""), f"hook(matcher={matcher})", log)
+            kept.append(h)
         if kept:
             new_group = dict(group)
             new_group["hooks"] = kept
             out.append(new_group)
         else:
-            log.append(f"    drop empty group (matcher={group.get('matcher','?')})")
+            log.append(f"    drop empty group (matcher={matcher})")
     return out
 
 
@@ -84,6 +126,38 @@ def transform_hooks(data: dict, opts: argparse.Namespace, log: list) -> None:
             log.append(f"  drop empty event {event}")
 
 
+def _mcp_bad_strings(cfg: dict) -> list[str]:
+    """Collect strings under command/cwd/args/env-values that match a
+    known-bad pattern (sweatshop or macOS-only). Strict-strip targets only."""
+    bad: list[str] = []
+    for key in ("command", "cwd"):
+        v = cfg.get(key)
+        if isinstance(v, str) and is_local_command(v):
+            bad.append(f"{key}={v}")
+    for a in cfg.get("args", []) or []:
+        if isinstance(a, str) and is_local_command(a):
+            bad.append(f"args={a}")
+    env = cfg.get("env") or {}
+    if isinstance(env, dict):
+        for ek, ev in env.items():
+            if isinstance(ev, str) and is_local_command(ev):
+                bad.append(f"env.{ek}={ev}")
+    return bad
+
+
+def _mcp_warn_strings(cfg: dict, server_name: str, log: list) -> None:
+    """Warn-only scan: surface machine-specific paths in MCP config so the
+    user can decide whether to keep, edit, or remove the server entry."""
+    for key in ("command", "cwd"):
+        scan_likely_local(cfg.get(key, ""), f"mcpServers.{server_name}.{key}", log)
+    for i, a in enumerate(cfg.get("args", []) or []):
+        scan_likely_local(a, f"mcpServers.{server_name}.args[{i}]", log)
+    env = cfg.get("env") or {}
+    if isinstance(env, dict):
+        for ek, ev in env.items():
+            scan_likely_local(ev, f"mcpServers.{server_name}.env.{ek}", log)
+
+
 def transform_mcp(data: dict, opts: argparse.Namespace, log: list) -> None:
     if not opts.strip_local_mcp:
         return
@@ -93,11 +167,13 @@ def transform_mcp(data: dict, opts: argparse.Namespace, log: list) -> None:
     log.append("[mcpServers]")
     for name in list(servers.keys()):
         cfg = servers[name] or {}
-        args = cfg.get("args", []) or []
-        bad = [a for a in args if isinstance(a, str) and is_local_command(a)]
+        bad = _mcp_bad_strings(cfg)
         if bad:
-            log.append(f"  drop server '{name}': args reference {bad[0][:80]}")
+            log.append(f"  drop server '{name}': {bad[0][:120]}")
             del servers[name]
+            continue
+        # Warn-only on machine-specific but not strictly-bad paths
+        _mcp_warn_strings(cfg, name, log)
 
 
 def rewrite_paths(obj: Any, src_user: str, dst_user: str) -> Any:

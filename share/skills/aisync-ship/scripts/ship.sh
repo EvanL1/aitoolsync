@@ -52,6 +52,7 @@ INCLUDE_CREDS=0          # default OFF — user prefers each machine logs in its
 KEEP_STAGE=0
 ALLOW_MISSING_CLAUDE=0
 ALSO_PLATFORMS=""        # comma-separated, empty = no fan-out
+REQUIRE_CLAUDE=0         # 1 = die when remote claude is missing (default: warn-only)
 REMOTE_HOME=""
 REMOTE_USER=""
 REMOTE_EXISTING="no"
@@ -85,7 +86,11 @@ Options:
                           are NOT fanned out (Claude-specific format).
   --keep-stage            Keep /tmp staging dir after --apply (default: clean).
   --source-dir <path>     Override source dir (default: $HOME/.claude).
-  --allow-missing-claude  Continue when 'claude' is not on remote PATH.
+  --allow-missing-claude  (Deprecated alias; warning is now the default.)
+  --require-claude        Strict mode: refuse to ship when 'claude' is missing
+                          on the remote. Default is to warn and proceed
+                          (the contract is "ship the config, target only needs
+                          ssh + tar + sh").
   --help                  Show this help.
 
 Behavior on remote: install-remote.sh swaps in the new ~/.claude atomically
@@ -104,6 +109,7 @@ parse_args() {
       --keep-stage) KEEP_STAGE=1; shift ;;
       --source-dir) SOURCE_DIR="$2"; shift 2 ;;
       --allow-missing-claude) ALLOW_MISSING_CLAUDE=1; shift ;;
+      --require-claude) REQUIRE_CLAUDE=1; shift ;;
       --also) ALSO_PLATFORMS="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown flag: $1 (try --help)" ;;
@@ -141,11 +147,10 @@ command -v claude >/dev/null 2>&1 && printf claude=yes\\n || printf claude=no\\n
   claude_p=$(printf '%s\n' "$out" | sed -n 's/^claude=//p' | tail -1)
   [[ "$tar_p" == "yes" ]] || die "remote does not have tar in PATH"
   if [[ "$claude_p" != "yes" ]]; then
-    if [[ "$ALLOW_MISSING_CLAUDE" -eq 1 ]]; then
-      warn "claude not on remote PATH (proceeding due to --allow-missing-claude)"
-    else
-      die "claude not on remote PATH; rerun with --allow-missing-claude to override"
+    if [[ "$REQUIRE_CLAUDE" -eq 1 ]]; then
+      die "claude not on remote PATH and --require-claude was passed"
     fi
+    warn "claude not on remote PATH — config will land but 'claude' is missing (use --require-claude to refuse this case)"
   fi
   log "remote home=$REMOTE_HOME user=$REMOTE_USER existing=$REMOTE_EXISTING"
 }
@@ -229,11 +234,12 @@ fanout_to_other_platforms() {
 
 write_manifest() {
   local mf="${STAGE_PARENT}/manifest.tsv"
-  printf '.claude\t.claude\n' > "$mf"
+  # .claude is the tool that owns the user_dir → replace mode (atomic swap).
+  printf '.claude\t.claude\treplace\n' > "$mf"
   if [[ -n "$MANIFEST_FANOUT" && -f "$MANIFEST_FANOUT" ]]; then
     cat "$MANIFEST_FANOUT" >> "$mf"
   fi
-  log "manifest: $mf ($(wc -l <"$mf" | tr -d ' ') entries)"
+  log "manifest: $mf ($(wc -l <"$mf" | tr -d ' ') entries; .claude=replace, fan-out=merge)"
 }
 
 # ---- Plan reporting ---------------------------------------------------------

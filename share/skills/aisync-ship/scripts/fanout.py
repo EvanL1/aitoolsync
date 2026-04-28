@@ -224,7 +224,10 @@ def main() -> int:
         counts = fanout_one(src, plat, dest_dir, log, opts.dry_run)
         summary[plat] = counts
         if counts["total"] > 0:
-            manifest_lines.append(f"{sub}\t{sub}")
+            # Fan-out targets ALWAYS use merge mode: we only own the subset of
+            # files we wrote (root_md + rules + skills + agents). The target
+            # tool's auth.json/config.toml/sessions/etc. must NOT be wiped.
+            manifest_lines.append(f"{sub}\t{sub}\tmerge")
     log.append(f"# summary: {json.dumps(summary)}")
     emit_log(log, opts.log)
     if opts.manifest:
