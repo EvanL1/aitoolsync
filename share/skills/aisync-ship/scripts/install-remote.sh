@@ -152,12 +152,22 @@ $dest|$backup|$mode"
     # with exactly the staged contents — so source-side deletions propagate,
     # but only within these subtrees. Files in dest outside these subtrees
     # (auth.json, config.toml, sessions, memories, ...) are untouched.
+    #
+    # Defense-in-depth: refuse to rm a subtree the staged side did not
+    # actually populate. If manifest claims ownership of `rules` but staged
+    # has no `rules/` subdir, the cp would not rewrite dest/rules — silently
+    # erasing user data. fanout.py is supposed to only list subtrees with
+    # counts > 0, but we do not trust that exclusively.
     if [ -n "$owned_csv" ]; then
       OLD_IFS="$IFS"; IFS=,
       for sub in $owned_csv; do
         IFS="$OLD_IFS"
         if [ -n "$sub" ]; then
-          rm -rf "$dest/$sub"
+          if [ -d "$staged/$sub" ]; then
+            rm -rf "$dest/$sub"
+          else
+            printf 'install-remote: ignoring owned-subtree claim "%s" — staged has no such dir\n' "$sub" >&2
+          fi
         fi
         OLD_IFS="$IFS"; IFS=,
       done

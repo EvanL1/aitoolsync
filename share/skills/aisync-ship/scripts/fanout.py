@@ -234,8 +234,21 @@ def main() -> int:
             # The 4th column lists subtrees we own outright: install-remote.sh
             # rm -rf's them in dest before merging so deletions propagate, but
             # only within those subtrees. Everything else in dest is preserved.
+            #
+            # CRITICAL: ownership is EVIDENCE-BASED, not declarative. We list
+            # only subtrees we actually wrote to stage this run (counts > 0).
+            # If we declared ownership of `rules` whenever the platform has a
+            # rules_dir — even when source has no rules — install-remote would
+            # rm dest/rules without rewriting it, deleting the user's existing
+            # rules that have nothing to do with this fan-out invocation.
             p = PLATFORMS[plat]
-            owned = [d for d in (p["rules_dir"], p["skills_dir"], p["agents_dir"]) if d]
+            owned = []
+            if p["rules_dir"] and counts["rules"] > 0:
+                owned.append(p["rules_dir"])
+            if p["skills_dir"] and counts["skills"] > 0:
+                owned.append(p["skills_dir"])
+            if p["agents_dir"] and counts["agents"] > 0:
+                owned.append(p["agents_dir"])
             owned_csv = ",".join(owned)
             manifest_lines.append(f"{sub}\t{sub}\tmerge\t{owned_csv}")
     log.append(f"# summary: {json.dumps(summary)}")
