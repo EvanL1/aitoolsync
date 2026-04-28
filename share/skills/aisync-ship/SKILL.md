@@ -1,6 +1,6 @@
 ---
 name: aisync-ship
-description: Use when the user wants to copy/sync their Claude Code configuration (~/.claude/) from this machine to another machine over SSH. Handles credential migration (macOS Keychain → file), path rewriting (/Users/evan → /home/<user>), local-bound hook stripping (sweatshop bridge / localhost HTTP hooks), and runtime-data isolation (sessions/history/session-env never leave the source). Target machine only needs ssh + tar.
+description: Use when the user wants to copy/sync their Claude Code configuration (~/.claude/) from this machine to (a) another machine over SSH, and/or (b) other agent CLI user dirs (~/.codex, ~/.gemini, ~/.cursor, ~/.codeium/windsurf, ~/.cline) on the same or remote machine. Handles path rewriting, local-bound hook stripping, runtime-data isolation, and Claude → other-tool fan-out. Credentials are NOT shipped by default. Target machine only needs ssh + tar.
 tools: Read, Bash, Edit
 ---
 
@@ -13,12 +13,22 @@ Sync user-level Claude Code configuration to a remote machine. **Target machine 
 User says any of:
 - "把配置同步到 evan@x.x.x.x" / "把 Claude 配置同步到 192.168.x.x"
 - "ship my Claude setup to <host>"
+- "把 ~/.claude 也同步到 ~/.codex / 让 Codex 也用一样的 skills/rules"
+- "fan out my Claude config to all the agent CLIs on this machine"
+- "把 Claude 的 skill 和 rule 也复制到 Codex 和 Gemini" (cross-tool, same machine)
 - "let me login to Claude on machine Y / 让我在 Y 机器上登录 Claude"
-- "copy ~/.claude to <host>"
+
+## Capability matrix
+
+| Scenario | Command |
+|---|---|
+| **A. Same machine, cross-tool fan-out** (Claude → Codex/Gemini/Cursor/Windsurf/Cline on this host) | `scripts/fanout.py --dry-run` (auto-detects which user_dirs exist) → review → re-run without `--dry-run` |
+| **B. Cross-machine, single tool** (Claude on src → Claude on remote) | `scripts/ship.sh --dry-run <user@host>` → review → `--apply` |
+| **C. Cross-machine + cross-tool** (Claude on src → Claude + Codex + ... on remote) | `scripts/ship.sh --dry-run --also codex,gemini <user@host>` → review → `--apply` |
 
 ## When NOT to use
 
-- For project-level `.agents/` rule sync between AI tools (Claude/Codex/Gemini/Cursor/...) — use `aisync sync` instead.
+- For project-level `.agents/` rule sync between AI tools (Claude/Codex/Gemini/Cursor/...) — use `aisync sync` instead. This skill is **user-level** (`~/.claude` → `~/.<other-tool>`), not project-level.
 - For pulling configuration FROM a remote source onto this machine — Phase 3 (`--pull`), not yet implemented.
 
 ## Pre-flight checklist (MUST execute before any transfer)
@@ -54,7 +64,7 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 | 5 | Runtime data | `sessions/`, `history.jsonl`, `session-env/`, `projects/`, `file-history/`, `paste-cache/`, `shell-snapshots/`, `debug/`, `telemetry/`, `usage-data/`, `cache/`, `downloads/`, `plans/`, `tasks/`, `teams/`, `backups/`, `stats-cache.json`, `mcp-needs-auth-cache.json` | Exclude from tarball (privacy + size) |
 | 6 | Plugin cache | `plugins/` (entire dir, ~200 MB cache + marketplaces re-fetchable) | Exclude; remote re-resolves from `enabledPlugins` in settings.json |
 | 7 | AppleDouble | `._*`, `.DS_Store` | Exclude from tarball |
-| 8 | Credentials | macOS Keychain `Claude Code-credentials` | Extract via `security`, install at `~/.claude/.credentials.json` mode `0600` on remote. JSON shape sanity-checked before staging. |
+| 8 | Credentials | macOS Keychain `Claude Code-credentials` | **NOT shipped by default.** Each machine should `claude login` independently. Opt in with `--include-credentials` only when explicitly requested. |
 
 ## Execution flow
 
@@ -80,7 +90,7 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 
 ## Decision points (require user confirmation, do NOT default)
 
-- **Include credentials**: default ON for first-time setup, OFF for re-sync. Ask user if ambiguous (e.g., `.bak.*` already present on remote = re-sync).
+- **Include credentials**: **default OFF.** The user's standing preference is one `claude login` per machine — do not ship Keychain credentials unless they explicitly ask. If asked, use `--include-credentials`.
 - **Wipe remote-only files (mirror mode)**: default OFF. Phase 2 will add `--mirror`.
 - **Plugin cache cleanup on remote**: ship.sh already excludes `plugins/` so the staged side is clean; remote `plugins/cache/` survives unless user asks to wipe.
 
@@ -91,14 +101,31 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 - DO NOT skip credentials extraction on macOS — Keychain entries are NOT in the filesystem; without `security find-generic-password`, the remote will have no auth.
 - DO NOT assume target has rsync — use the `tar | ssh tar` pipe in `ship.sh`.
 - DO NOT push to a remote `~/.claude` without backing up — `ship.sh` does this automatically; if you bypass the script, replicate the backup.
+- DO NOT ship credentials by default. The user's preference is to `claude login` on each machine independently. Only pass `--include-credentials` when the user explicitly asks ("把凭证也带过去" / "include creds").
 - DO NOT ship `.credentials.json` from the local filesystem on macOS — it is a stale empty stub; the truth lives in Keychain.
+
+## Cross-tool fan-out (A and C scenarios)
+
+`fanout.py` mirrors `~/.claude/`'s portable parts (root MD, `rules/`, `skills/`, `agents/`) into other agent CLIs' user dirs per `src/platforms.rs`. **What is NOT fanned out** (Claude-specific format, would corrupt other tools): `settings.json`, `.mcp.json`, `hooks/`, `commands/`, `lib/`, `scripts/`, `statusline-command.sh`, `.credentials.json`.
+
+Fan-out target detection: `fanout.py` (no flags) auto-detects which agent user_dirs exist on this host (e.g., if `~/.cursor/` exists, Cursor is in scope). Override with `--to-platforms <list>` or `--all-platforms`.
+
+Per-platform mapping (from `platforms.rs`):
+
+| Source | codex | gemini | cursor | windsurf | cline |
+|---|---|---|---|---|---|
+| `CLAUDE.md` | `~/.codex/AGENTS.md` | `~/.gemini/GEMINI.md` | (no user root md) | (no user root md) | (no user root md) |
+| `rules/*.md` | `~/.codex/rules/*.md` | (no rules dir) | `~/.cursor/rules/*.mdc` (ext rewrite) | `~/.codeium/windsurf/rules/*.md` | (no rules dir) |
+| `skills/<n>/SKILL.md` | `~/.codex/skills/<n>/SKILL.md` | `~/.gemini/skills/<n>/SKILL.md` | (no skills dir) | (no skills dir) | (no skills dir) |
+| `agents/*.md` | (no agents dir) | (no agents dir) | (no agents dir) | (no agents dir) | (no agents dir) |
 
 ## Helper scripts
 
-- `scripts/extract-credentials.sh` — platform-aware. macOS: `security find-generic-password -s 'Claude Code-credentials' -w`. Linux: cat `~/.claude/.credentials.json`. Sanity-checks JSON shape (first byte `{` or `[`). Exits non-zero on failure.
+- `scripts/extract-credentials.sh` — platform-aware. macOS: `security find-generic-password -s 'Claude Code-credentials' -w`. Linux: cat `~/.claude/.credentials.json`. Sanity-checks JSON shape (first byte `{` or `[`). Exits non-zero on failure. **Not invoked by default** (credentials opt-in via `--include-credentials`).
 - `scripts/transform-settings.py` — JSON-aware transformation engine for `settings.json` AND `.mcp.json`. Reads from `--in` path, writes to `--out` path, emits a human-readable transformation log. Idempotent on already-transformed input.
-- `scripts/install-remote.sh` — POSIX `sh` script that runs on the REMOTE inside a tmpdir. Handles credential preservation, atomic mv-swap, and restore-on-error rollback. Companion of `ship.sh`.
-- `scripts/ship.sh` — orchestrator. `ship.sh --help` for full usage. Calls `extract-credentials.sh` + `transform-settings.py` locally; ships `install-remote.sh` along with the staged config so the remote does the install transactionally.
+- `scripts/fanout.py` — Claude → other-tool user-dir fan-out engine. Standalone for A-mode (`--dry-run` then re-run); invoked by `ship.sh --also` for C-mode (writes to a stage dir + emits manifest TSV).
+- `scripts/install-remote.sh` — POSIX `sh` script that runs on the REMOTE inside a tmpdir. Reads a manifest TSV (`<stage_subpath>\t<home_subpath>`) and atomically mv-swaps each entry, with cross-platform restore-on-error. Credential preservation only applies to `.claude`.
+- `scripts/ship.sh` — orchestrator. `ship.sh --help` for full usage. Calls `extract-credentials.sh` + `transform-settings.py` + `fanout.py` locally; ships `install-remote.sh` + `manifest.tsv` along with all staged platform subdirs so the remote does the install transactionally.
 
 ## Recovery
 

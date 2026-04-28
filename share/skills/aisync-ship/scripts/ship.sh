@@ -48,9 +48,10 @@ TRANSFORM_FILES=(settings.json .mcp.json)
 
 MODE="dry-run"          # dry-run | apply
 TARGET=""
-INCLUDE_CREDS=1
+INCLUDE_CREDS=0          # default OFF — user prefers each machine logs in itself
 KEEP_STAGE=0
 ALLOW_MISSING_CLAUDE=0
+ALSO_PLATFORMS=""        # comma-separated, empty = no fan-out
 REMOTE_HOME=""
 REMOTE_USER=""
 REMOTE_EXISTING="no"
@@ -74,7 +75,14 @@ Sync ~/.claude/ to a remote machine over SSH. Target only needs ssh + tar + sh.
 Options:
   --dry-run               Stage + show plan, do NOT transfer (default).
   --apply                 Confirm and execute the transfer.
-  --no-credentials        Skip credential extraction; remote keeps its own.
+  --include-credentials   Extract Keychain credential and ship it (default OFF;
+                          opt-in only — preferred workflow is `claude login` on
+                          each machine independently).
+  --no-credentials        Explicitly skip credential extraction (the default).
+  --also <list>           Also fan out ~/.claude → other agent CLI user dirs on
+                          the remote. Comma-separated platform names (codex,
+                          gemini, cursor, windsurf, cline). Hooks/settings/.mcp
+                          are NOT fanned out (Claude-specific format).
   --keep-stage            Keep /tmp staging dir after --apply (default: clean).
   --source-dir <path>     Override source dir (default: $HOME/.claude).
   --allow-missing-claude  Continue when 'claude' is not on remote PATH.
@@ -91,10 +99,12 @@ parse_args() {
     case "$1" in
       --dry-run) MODE="dry-run"; shift ;;
       --apply)   MODE="apply"; shift ;;
-      --no-credentials) INCLUDE_CREDS=0; shift ;;
+      --include-credentials) INCLUDE_CREDS=1; shift ;;
+      --no-credentials)      INCLUDE_CREDS=0; shift ;;
       --keep-stage) KEEP_STAGE=1; shift ;;
       --source-dir) SOURCE_DIR="$2"; shift 2 ;;
       --allow-missing-claude) ALLOW_MISSING_CLAUDE=1; shift ;;
+      --also) ALSO_PLATFORMS="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown flag: $1 (try --help)" ;;
       *)  [[ -z "$TARGET" ]] || die "extra arg: $1"; TARGET="$1"; shift ;;
@@ -106,6 +116,8 @@ parse_args() {
     || die "missing companion script: ${SCRIPT_DIR}/install-remote.sh"
   [[ -f "${SCRIPT_DIR}/transform-settings.py" ]] \
     || die "missing companion script: ${SCRIPT_DIR}/transform-settings.py"
+  [[ -f "${SCRIPT_DIR}/fanout.py" ]] \
+    || die "missing companion script: ${SCRIPT_DIR}/fanout.py"
 }
 
 # ---- Pre-flight -------------------------------------------------------------
@@ -198,19 +210,52 @@ stage_install_script() {
   chmod 0755 "${STAGE_PARENT}/install-remote.sh"
 }
 
+# Run fanout.py against the staged .claude to materialize sibling stage
+# subdirs (.codex, .gemini, ...) per --also list. Writes its part of the
+# manifest to MANIFEST_FANOUT, which write_manifest then concatenates
+# after the .claude entry.
+MANIFEST_FANOUT=""
+fanout_to_other_platforms() {
+  if [[ -z "$ALSO_PLATFORMS" ]]; then return; fi
+  MANIFEST_FANOUT="${STAGE_PARENT}/manifest.fanout.tsv"
+  "${SCRIPT_DIR}/fanout.py" \
+    --from "$STAGE_DIR" \
+    --out-base "$STAGE_PARENT" \
+    --to-platforms "$ALSO_PLATFORMS" \
+    --manifest "$MANIFEST_FANOUT" \
+    --log "${STAGE_PARENT}/fanout.log"
+  log "fanout: --also=$ALSO_PLATFORMS (log: ${STAGE_PARENT}/fanout.log)"
+}
+
+write_manifest() {
+  local mf="${STAGE_PARENT}/manifest.tsv"
+  printf '.claude\t.claude\n' > "$mf"
+  if [[ -n "$MANIFEST_FANOUT" && -f "$MANIFEST_FANOUT" ]]; then
+    cat "$MANIFEST_FANOUT" >> "$mf"
+  fi
+  log "manifest: $mf ($(wc -l <"$mf" | tr -d ' ') entries)"
+}
+
 # ---- Plan reporting ---------------------------------------------------------
 
 print_plan() {
   log "============================================"
   log "PLAN ($MODE)"
   log "  source:   $SOURCE_DIR"
-  log "  target:   $TARGET ($REMOTE_HOME/.claude)"
-  log "  staged:   $STAGE_DIR"
-  log "  files:    $(find "$STAGE_DIR" -type f | wc -l | tr -d ' ')"
-  log "  size:     $(du -sh "$STAGE_DIR" | awk '{print $1}')"
+  log "  target:   $TARGET ($REMOTE_HOME)"
+  log "  staged:   $STAGE_PARENT"
+  log "  .claude:  $(find "$STAGE_DIR" -type f | wc -l | tr -d ' ') files, $(du -sh "$STAGE_DIR" | awk '{print $1}')"
+  if [[ -n "$ALSO_PLATFORMS" ]]; then
+    log "  also:     $ALSO_PLATFORMS"
+    while IFS=$'\t' read -r ssub _; do
+      [[ -z "$ssub" || "$ssub" == \#* ]] && continue
+      local sd="${STAGE_PARENT}/${ssub}"
+      [[ -d "$sd" ]] && log "    └─ $ssub: $(find "$sd" -type f | wc -l | tr -d ' ') files, $(du -sh "$sd" | awk '{print $1}')"
+    done < "${MANIFEST_FANOUT:-/dev/null}"
+  fi
   log "  excludes: $(((${#TAR_EXCLUDES[@]}) / 2)) patterns"
   log "  creds:    $([[ $INCLUDE_CREDS -eq 1 ]] && echo INCLUDED || echo SKIPPED)"
-  log "  install:  atomic mv-swap with restore-on-error trap"
+  log "  install:  atomic mv-swap with restore-on-error trap (per platform)"
   local f
   for f in "${TRANSFORM_FILES[@]}"; do
     local lf="${STAGE_PARENT}/transform-${f}.log"
@@ -231,16 +276,31 @@ confirm_apply() {
   [[ "$ans" =~ ^[Yy]$ ]] || die "aborted by user"
 }
 
-# Stream the staged .claude AND install-remote.sh together; the remote
-# untars to a tmpdir then runs install-remote.sh (atomic mv with rollback).
+# Build list of stage subdirs to ship: always .claude, plus any from manifest.
+collect_stage_subdirs() {
+  local out=(.claude)
+  if [[ -n "$MANIFEST_FANOUT" && -f "$MANIFEST_FANOUT" ]]; then
+    while IFS=$'\t' read -r ssub _; do
+      [[ -z "$ssub" || "$ssub" == \#* ]] && continue
+      [[ -d "${STAGE_PARENT}/${ssub}" ]] && out+=("$ssub")
+    done < "$MANIFEST_FANOUT"
+  fi
+  printf '%s\n' "${out[@]}"
+}
+
+# Stream stage (manifest + install-remote.sh + all platform subdirs); the
+# remote untars to a tmpdir then runs install-remote.sh (atomic per-platform
+# mv with cross-platform rollback).
 transfer() {
   local bootstrap='set -eu
 tmp="${TMPDIR:-/tmp}/aisync-ship-$$"
 trap "rm -rf $tmp" EXIT HUP INT TERM
 mkdir -p "$tmp"
 tar xzf - -C "$tmp"
-sh "$tmp/install-remote.sh" "$tmp/.claude"'
-  ( cd "$STAGE_PARENT" && COPYFILE_DISABLE=1 tar czf - .claude install-remote.sh ) \
+sh "$tmp/install-remote.sh" "$tmp/manifest.tsv" "$tmp"'
+  local subs=()
+  while IFS= read -r s; do subs+=("$s"); done < <(collect_stage_subdirs)
+  ( cd "$STAGE_PARENT" && COPYFILE_DISABLE=1 tar czf - install-remote.sh manifest.tsv "${subs[@]}" ) \
     | ssh "$TARGET" "$bootstrap"
   log "transfer complete"
 }
@@ -263,7 +323,9 @@ main() {
   stage_copy_via_tar
   transform_files
   include_credentials
+  fanout_to_other_platforms
   stage_install_script
+  write_manifest
   print_plan
   if [[ "$MODE" == "dry-run" ]]; then
     log "DRY-RUN: stopping before transfer."
