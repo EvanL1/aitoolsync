@@ -184,17 +184,42 @@ $dest|$backup|$mode"
   # Apply staged content.
   if [ "$mode" = "merge" ]; then
     mkdir -p "$dest"
-    # Owned-subtree replace: delete dest's copy of each subtree we own BEFORE
-    # the overlay cp. After cp -aR staged/. dest/, the subtree comes back
-    # with exactly the staged contents — so source-side deletions propagate,
-    # but only within these subtrees. Files in dest outside these subtrees
-    # (auth.json, config.toml, sessions, memories, ...) are untouched.
-    #
-    # Defense-in-depth: refuse to rm a subtree the staged side did not
-    # actually populate. If manifest claims ownership of `rules` but staged
-    # has no `rules/` subdir, the cp would not rewrite dest/rules — silently
-    # erasing user data. fanout.py is supposed to only list subtrees with
-    # counts > 0, but we do not trust that exclusively.
+
+    # PREFERRED: marker-based delete propagation. fanout.py writes
+    # ".aisync-ship-managed" listing every file it installed. On the next
+    # run, files in OLD marker but not in NEW marker are exactly those we
+    # installed previously and have since dropped — delete those, but
+    # NEVER touch files outside the marker (user-authored entries are
+    # protected automatically because they were never recorded).
+    new_marker="$staged/.aisync-ship-managed"
+    old_marker="$dest/.aisync-ship-managed"
+    if [ -f "$new_marker" ]; then
+      if [ -f "$old_marker" ]; then
+        # grep -vxFf: print lines from old_marker that don't exactly
+        # match any line in new_marker. POSIX-portable; no jq/python.
+        grep -vxFf "$new_marker" "$old_marker" 2>/dev/null \
+          | while read -r rel; do
+              case "$rel" in '#'*|'') continue ;; esac
+              if [ -e "$dest/$rel" ] || [ -L "$dest/$rel" ]; then
+                rm -rf "$dest/$rel"
+                printf 'install-remote: marker-delete %s\n' "$dest/$rel" >&2
+              fi
+              # Prune empty ancestor dirs (rmdir refuses non-empty → safe)
+              parent=$(dirname "$rel")
+              while [ "$parent" != "." ] && [ "$parent" != "/" ]; do
+                rmdir "$dest/$parent" 2>/dev/null || break
+                parent=$(dirname "$parent")
+              done
+            done
+      fi
+      # New marker present → suppress legacy owned-subtree replace.
+      owned_csv=""
+    fi
+
+    # LEGACY (no marker): owned-subtree replace. Kept for backward-compat
+    # with old fanout.py manifests that didn't write a marker. Once all
+    # remote dests have been touched by a marker-aware fan-out at least
+    # once, this branch becomes dead code.
     if [ -n "$owned_csv" ]; then
       OLD_IFS="$IFS"; IFS=,
       for sub in $owned_csv; do

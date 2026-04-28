@@ -103,19 +103,6 @@ def copy_root_md(src_root: Path, dest_dir: Path, target_name: Optional[str],
     return 1 if copy_file(src_md, dest_dir / target_name, log, dry_run, "root-md") else 0
 
 
-def replace_subtree(target_dir: Path, log: list, dry_run: bool, label: str) -> None:
-    """Owned-subtree replace: clear target_dir before populating it.
-    Used by A-mode (this file's direct copy) so deletion-propagation
-    matches what C-mode (install-remote.sh) does. Only called when the
-    source has at least one entry (evidence-based ownership)."""
-    if dry_run:
-        log.append(f"  {label}-replace: would clear {target_dir} before copy")
-        return
-    if target_dir.exists():
-        log.append(f"  {label}-replace: clearing {target_dir}")
-        shutil.rmtree(target_dir)
-
-
 def container_is_unsafe(container: Path, label: str, log: list) -> bool:
     """A container dir (rules/, skills/, agents/) inside the source root
     is "unsafe" if it's itself a symlink. is_dir() follows symlinks, so
@@ -146,7 +133,6 @@ def copy_rules(src_root: Path, dest_dir: Path, rules_subdir: Optional[str],
     if not files:
         return 0
     target_root = dest_dir / rules_subdir
-    replace_subtree(target_root, log, dry_run, "rules")
     n = 0
     for f in files:
         if copy_file(f, target_root / f"{f.stem}.{ext}", log, dry_run, "rule"):
@@ -185,12 +171,17 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
                 skill_dirs.append(sd)
         if not skill_dirs:
             return 0
-        replace_subtree(target_root, log, dry_run, "skills")
         for sd in skill_dirs:
             target_dir = target_root / sd.name
             log.append(f"  skill-dir: {sd} -> {target_dir}")
             if not dry_run:
                 target_dir.parent.mkdir(parents=True, exist_ok=True)
+                # If a previous version of this same-named skill is in the
+                # target, remove it before copytree (which refuses an
+                # existing dst). This is the per-skill replace and is safe:
+                # the target_dir path is scoped to one named skill.
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
                 # symlinks=True: symlinks INSIDE ~/.claude/skills/<name>/
                 # are preserved as symlinks (not dereferenced). The top-level
                 # sd is guaranteed to be a real dir by the symlink-check above.
@@ -200,7 +191,6 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
         skill_files = sorted(skills_src.rglob("SKILL.md"))
         if not skill_files:
             return 0
-        replace_subtree(target_root, log, dry_run, "skills")
         for sm in skill_files:
             target = target_root / f"{sm.parent.name}.md"
             if copy_file(sm, target, log, dry_run, "skill-flat"):
@@ -221,11 +211,119 @@ def copy_agents(src_root: Path, dest_dir: Path, agents_subdir: Optional[str],
     if not files:
         return 0
     target_root = dest_dir / agents_subdir
-    replace_subtree(target_root, log, dry_run, "agents")
     n = 0
     for f in files:
         if copy_file(f, target_root / f.name, log, dry_run, "agent"):
             n += 1
+    return n
+
+
+MARKER_FILENAME = ".aisync-ship-managed"
+
+
+def _plan_skill_paths(skills_src: Path, p: dict) -> list[str]:
+    """Helper for plan_managed_paths — list dest-rel paths we'd write for
+    every non-symlinked skill under skills_src."""
+    paths: list[str] = []
+    sub = p["skills_dir"]
+    if p["skills_as_dir"]:
+        for sd in sorted(skills_src.iterdir()):
+            if sd.is_symlink() or not sd.is_dir() or not (sd / "SKILL.md").exists():
+                continue
+            for f in sd.rglob("*"):
+                if f.is_symlink() or f.is_file():
+                    rel = f.relative_to(sd)
+                    paths.append(f"{sub}/{sd.name}/{rel.as_posix()}")
+    else:
+        for sm in sorted(skills_src.rglob("SKILL.md")):
+            if not sm.is_symlink():
+                paths.append(f"{sub}/{sm.parent.name}.md")
+    return paths
+
+
+def plan_managed_paths(src_root: Path, p: dict) -> list[str]:
+    """Predict the dest-relative paths fanout WILL install for this source
+    + platform combination. Mirrors copy_root_md/copy_rules/copy_skills/
+    copy_agents (symlinks skipped, container symlinks skipped). Used to
+    write the marker file BEFORE we'd accidentally include user-authored
+    files in dest (which a post-cp dest walk would).
+    """
+    paths: list[str] = []
+    if p["user_root_md"]:
+        src_md = src_root / "CLAUDE.md"
+        if src_md.is_file() and not src_md.is_symlink():
+            paths.append(p["user_root_md"])
+    if p["rules_dir"]:
+        rules_src = src_root / "rules"
+        if rules_src.is_dir() and not rules_src.is_symlink():
+            for f in sorted(rules_src.glob("*.md")):
+                if not f.is_symlink():
+                    paths.append(f"{p['rules_dir']}/{f.stem}.{p['rules_ext']}")
+    if p["skills_dir"]:
+        skills_src = src_root / "skills"
+        if skills_src.is_dir() and not skills_src.is_symlink():
+            paths.extend(_plan_skill_paths(skills_src, p))
+    if p["agents_dir"]:
+        agents_src = src_root / "agents"
+        if agents_src.is_dir() and not agents_src.is_symlink():
+            for f in sorted(agents_src.glob("*.md")):
+                if not f.is_symlink():
+                    paths.append(f"{p['agents_dir']}/{f.name}")
+    return sorted(set(paths))
+
+
+def write_marker(dest_dir: Path, platform: str, paths: list[str], log: list) -> None:
+    """Plain-text marker (one rel-path per line) so install-remote.sh can
+    parse it with POSIX sh + grep, no JSON/jq dependency."""
+    marker = dest_dir / MARKER_FILENAME
+    body = (f"# aisync-ship managed manifest v1\n"
+            f"# platform: {platform}\n"
+            + "\n".join(paths) + ("\n" if paths else ""))
+    marker.write_text(body, encoding="utf-8")
+    log.append(f"  marker: wrote {len(paths)} paths to {marker}")
+
+
+def read_marker(dest_dir: Path) -> list[str]:
+    """Read prior managed-paths list. Empty list if no marker (first run)."""
+    marker = dest_dir / MARKER_FILENAME
+    if not marker.is_file():
+        return []
+    paths = []
+    for line in marker.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        paths.append(line)
+    return paths
+
+
+def apply_marker_deletions(dest_dir: Path, old_managed: list[str],
+                           new_managed: list[str], log: list) -> int:
+    """Delete files in dest that we previously installed (in old marker) but
+    no longer install (not in new managed set). Files NOT in old marker —
+    e.g. user-authored ~/.codex/rules/manual.md — are never touched.
+    Prunes empty ancestor dirs after each delete so a fully-removed skill
+    dir like skills/active/ doesn't leave a hollow shell."""
+    to_delete = sorted(set(old_managed) - set(new_managed))
+    n = 0
+    for rel in to_delete:
+        target = dest_dir / rel
+        if not target.exists() and not target.is_symlink():
+            continue
+        if target.is_file() or target.is_symlink():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        log.append(f"  marker-delete: {target}")
+        n += 1
+        # Prune now-empty ancestor dirs, walking up but bounded to dest_dir
+        parent = target.parent
+        while parent != dest_dir and parent.is_relative_to(dest_dir):
+            try:
+                parent.rmdir()  # raises if non-empty → safe stop signal
+            except OSError:
+                break
+            parent = parent.parent
     return n
 
 
@@ -239,6 +337,19 @@ def fanout_one(src_root: Path, platform: str, dest_dir: Path,
         "agents":  copy_agents(src_root, dest_dir, p["agents_dir"], log, dry_run),
     }
     counts["total"] = sum(counts.values())
+    if counts["total"] > 0 and not dry_run:
+        # Marker-based delete propagation:
+        #   - OLD marker = what WE installed last time (user-authored never recorded)
+        #   - NEW managed set = what we just installed THIS run, computed from
+        #     source (NOT from walking dest, which would include round-1
+        #     leftovers + user-authored files and break the diff).
+        #   - Delete (old - new): previous installs that are no longer in source.
+        old_managed = read_marker(dest_dir)
+        new_managed = plan_managed_paths(src_root, p)
+        deleted = apply_marker_deletions(dest_dir, old_managed, new_managed, log)
+        if deleted:
+            log.append(f"  marker-delete: removed {deleted} stale entries")
+        write_marker(dest_dir, platform, new_managed, log)
     return counts
 
 
