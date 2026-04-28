@@ -136,7 +136,10 @@ command -v tar >/dev/null 2>&1 && printf tar=yes\\n || printf tar=no\\n
 command -v claude >/dev/null 2>&1 && printf claude=yes\\n || printf claude=no\\n
 [ -d "$HOME/.claude" ] && printf existing=yes\\n || printf existing=no\\n'
   local out
-  if ! out=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" "$script" 2>&1); then
+  # -n: don't read from stdin. Without this, ssh drains the parent shell's
+  # stdin (the operator's "y\n" intended for confirm_apply) and the
+  # subsequent read prompt hangs / receives empty input.
+  if ! out=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" "$script" 2>&1); then
     die "ssh to $TARGET failed: $out"
   fi
   REMOTE_HOME=$(printf '%s\n' "$out" | sed -n 's/^home=//p' | tail -1)
