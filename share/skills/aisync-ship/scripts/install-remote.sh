@@ -3,7 +3,7 @@
 #
 # Contract:
 #   $1 = path to a manifest TSV; one line per platform:
-#          <stage_subpath><TAB><home_relative_dest_subpath>[<TAB><mode>]
+#          <stage_subpath><TAB><home_subpath>[<TAB><mode>[<TAB><owned_subtrees_csv>]]
 #        where <mode> is "replace" (default) or "merge":
 #          replace — atomic mv-swap; whole dest dir is replaced by the staged
 #                    one. Use for the tool that owns the user_dir (Claude
@@ -13,10 +13,14 @@
 #                    present in staged. Use for fan-out into other tools'
 #                    user_dirs (~/.codex, ~/.gemini, ...) so we DO NOT wipe
 #                    their auth.json / config.toml / sessions etc.
+#        <owned_subtrees_csv> (merge mode only): comma-separated subdir names
+#        we fully own inside dest (e.g. "rules,skills"). Before the merge cp,
+#        these subdirs are rm -rf'd from dest so deletions at the source side
+#        propagate. dest entries OUTSIDE these subdirs are still preserved.
 #        e.g.:
 #          .claude    .claude              replace
-#          .codex     .codex               merge
-#          .codeium/windsurf  .codeium/windsurf  merge
+#          .codex     .codex               merge   rules,skills
+#          .codeium/windsurf  .codeium/windsurf  merge   rules
 #   $2 = path to the stage root (sibling of this script); contains all
 #        <stage_subpath> directories.
 #
@@ -73,6 +77,7 @@ install_one() {
   stage_sub="$1"
   home_sub="$2"
   mode="${3:-replace}"
+  owned_csv="${4:-}"
   staged="$stage_root/$stage_sub"
   dest="$HOME/$home_sub"
 
@@ -142,6 +147,22 @@ $dest|$backup|$mode"
   # Apply staged content.
   if [ "$mode" = "merge" ]; then
     mkdir -p "$dest"
+    # Owned-subtree replace: delete dest's copy of each subtree we own BEFORE
+    # the overlay cp. After cp -aR staged/. dest/, the subtree comes back
+    # with exactly the staged contents — so source-side deletions propagate,
+    # but only within these subtrees. Files in dest outside these subtrees
+    # (auth.json, config.toml, sessions, memories, ...) are untouched.
+    if [ -n "$owned_csv" ]; then
+      OLD_IFS="$IFS"; IFS=,
+      for sub in $owned_csv; do
+        IFS="$OLD_IFS"
+        if [ -n "$sub" ]; then
+          rm -rf "$dest/$sub"
+        fi
+        OLD_IFS="$IFS"; IFS=,
+      done
+      IFS="$OLD_IFS"
+    fi
     cp -aR "$staged/." "$dest/"     # overlay (preserves dest's other files)
   else
     mkdir -p "$(dirname "$dest")"
@@ -153,14 +174,14 @@ $dest|$backup|$mode"
 }
 
 # Read manifest line by line (TAB-separated; tolerate spaces too).
-while IFS="$(printf '\t')" read -r stage_sub home_sub mode _rest; do
+while IFS="$(printf '\t')" read -r stage_sub home_sub mode owned_csv _rest; do
   case "$stage_sub" in ''|\#*) continue ;; esac
   # Allow space-separated fallback
   if [ -z "$home_sub" ]; then
     set -- $stage_sub
-    stage_sub="$1"; home_sub="${2:-$1}"; mode="${3:-replace}"
+    stage_sub="$1"; home_sub="${2:-$1}"; mode="${3:-replace}"; owned_csv="${4:-}"
   fi
-  install_one "$stage_sub" "$home_sub" "${mode:-replace}"
+  install_one "$stage_sub" "$home_sub" "${mode:-replace}" "${owned_csv:-}"
 done < "$manifest"
 
 trap - EXIT HUP INT TERM

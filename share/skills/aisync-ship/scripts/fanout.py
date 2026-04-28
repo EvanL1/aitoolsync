@@ -224,10 +224,20 @@ def main() -> int:
         counts = fanout_one(src, plat, dest_dir, log, opts.dry_run)
         summary[plat] = counts
         if counts["total"] > 0:
-            # Fan-out targets ALWAYS use merge mode: we only own the subset of
-            # files we wrote (root_md + rules + skills + agents). The target
-            # tool's auth.json/config.toml/sessions/etc. must NOT be wiped.
-            manifest_lines.append(f"{sub}\t{sub}\tmerge")
+            # Fan-out targets use merge mode + owned-subtree replace.
+            #
+            # "merge" alone (cp -aR staged/. dest/) preserves the target tool's
+            # auth.json/config.toml/sessions but never deletes anything in dest
+            # — so removing a rule or skill at the source side leaves a stale
+            # copy in the fan-out target forever (config drift).
+            #
+            # The 4th column lists subtrees we own outright: install-remote.sh
+            # rm -rf's them in dest before merging so deletions propagate, but
+            # only within those subtrees. Everything else in dest is preserved.
+            p = PLATFORMS[plat]
+            owned = [d for d in (p["rules_dir"], p["skills_dir"], p["agents_dir"]) if d]
+            owned_csv = ",".join(owned)
+            manifest_lines.append(f"{sub}\t{sub}\tmerge\t{owned_csv}")
     log.append(f"# summary: {json.dumps(summary)}")
     emit_log(log, opts.log)
     if opts.manifest:

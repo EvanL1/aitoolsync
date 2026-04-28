@@ -72,7 +72,8 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 1. scripts/ship.sh --dry-run <target>     (default mode)
    → stages source via tar | tar (no source-side rsync needed)
    → transforms settings.json + .mcp.json (transform-settings.py)
-   → extracts credentials from Keychain (extract-credentials.sh)
+   → if (and ONLY if) --include-credentials was passed: extracts Keychain
+     credential via extract-credentials.sh
    → prints plan: stage dir, file count, transformation log, unified diff
 2. User reviews diff + confirms
 3. scripts/ship.sh --apply <target>
@@ -98,12 +99,10 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 
 - DO NOT `scp -r ~/.claude <target>:~/.claude` — captures sessions/history (privacy leak) and session-env (12K+ files, slow + brittle).
 - DO NOT silently apply settings.json transformations — always show the unified diff and get explicit user OK.
-- DO NOT skip credentials extraction on macOS — Keychain entries are NOT in the filesystem; without `security find-generic-password`, the remote will have no auth.
 - DO NOT assume target has rsync — use the `tar | ssh tar` pipe in `ship.sh`.
 - DO NOT push to a remote `~/.claude` without backing up — `ship.sh` does this automatically; if you bypass the script, replicate the backup.
-- DO NOT ship credentials by default. The user's standing preference is to `claude login` on each machine independently. Only pass `--include-credentials` when the user explicitly asks ("把凭证也带过去" / "include creds").
-- DO NOT shell out to `extract-credentials.sh` or copy `~/.claude/.credentials.json` "just in case" — the per-machine login model is the contract. If you bypass `--include-credentials` you violate user preference.
-- (Historical note: an earlier draft of this doc said "DO NOT skip credentials extraction on macOS." That guidance was reversed once the per-machine login policy was set. Trust the current default.)
+- DO NOT ship credentials by default. The script default is `--no-credentials` and the user's standing preference is to `claude login` on each machine independently. Only pass `--include-credentials` when the user explicitly asks ("把凭证也带过去" / "include creds").
+- DO NOT shell out to `extract-credentials.sh` or copy `~/.claude/.credentials.json` "just in case" — the per-machine login model is the contract.
 
 ## Cross-tool fan-out (A and C scenarios)
 
@@ -130,10 +129,23 @@ Per-platform mapping (from `platforms.rs`):
 
 ## Recovery
 
-If `install-remote.sh` aborts mid-flight, it auto-restores the backup; manual recovery should not be needed. If you need to roll back a *successful* install:
+`install-remote.sh` rollback covers most failure modes automatically, but is NOT a magic transaction — read the cases below before assuming "no manual recovery needed":
+
+| Failure mode | Auto-rollback? | Side effects |
+|---|---|---|
+| Apply step (`cp -aR staged/. dest/` or `mv staged dest`) fails partway | Yes — restores from snapshot backup | None; dest looks pre-install |
+| Snapshot itself fails (cp -aR dest backup hits permission/space) | No — dest is untouched (we never started writing it) but the script logs `cannot rollback ... backup missing` and exits non-zero | A `.partial` snapshot may be left as garbage for diagnosis |
+| Multi-platform: one platform's snapshot fails after others succeeded | Successful platforms roll back; the one with missing snapshot leaves dest untouched | Newly-created intermediate dirs from `mkdir -p $(dirname dest)` may stay (e.g. `~/.codeium/` if it didn't pre-exist and `.codeium/windsurf` install never ran) |
+
+To roll back a *successful* install manually:
 ```bash
 ssh <target> 'ls -d ~/.claude.bak.* 2>/dev/null'                    # find backups
 ssh <target> 'rm -rf ~/.claude && mv ~/.claude.bak.<ts> ~/.claude'  # restore
+```
+
+To clean diagnostic `.partial` garbage from a previous failed snapshot:
+```bash
+ssh <target> 'ls -d ~/.*.bak.*.partial 2>/dev/null && rm -rf ~/.*.bak.*.partial'
 ```
 
 The source side is never modified — staging happens in `/tmp/aisync-ship-<ts>/`, which is left in place after dry-run for inspection (cleaned up after a successful `--apply`, unless `--keep-stage` is given).
