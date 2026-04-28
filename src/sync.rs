@@ -547,7 +547,7 @@ fn copy_dir_all(src: &Path, dest: &Path) -> std::io::Result<usize> {
             }
             count += copy_dir_all(&path, &dest.join(name.as_ref()))?;
         } else {
-            fs::copy(&path, &dest.join(name.as_ref()))?;
+            fs::copy(&path, dest.join(name.as_ref()))?;
             count += 1;
         }
     }
