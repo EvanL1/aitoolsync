@@ -125,6 +125,13 @@ $dest|$backup|$mode"
   if [ -n "$backup" ]; then
     if [ "$mode" = "merge" ]; then
       backup_partial="$backup.partial"
+      # CRITICAL: clear any stale .partial left by a previous failed snapshot.
+      # If we skip this and the path exists as a dir, cp -aR src dir nests
+      # the source under it (cp creates dir/<basename src>/...). The
+      # subsequent atomic mv would then rename a poisoned, nested dir to
+      # the final backup path, and a later rollback would replace dest
+      # with that broken layout (data corruption + stale garbage merged in).
+      rm -rf "$backup_partial"
       cp -aR "$dest" "$backup_partial"
       mv "$backup_partial" "$backup"
     else
