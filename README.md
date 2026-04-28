@@ -106,6 +106,30 @@ aisync remote add devbox deploy@192.168.1.10
 aisync remote push devbox
 ```
 
+## Cross-Machine `~/.claude` Ship
+
+The above commands are project-level (`.agents/` → tools). For **user-level `~/.claude/` cross-machine sync** (Claude Code config, plus optional fan-out to `~/.codex` / `~/.gemini` / `~/.cursor` / `~/.codeium/windsurf` / `~/.cline`), use the `ship` subcommand:
+
+```bash
+# Push ~/.claude to a new machine (target only needs ssh + tar + sh)
+aisync ship --apply --yes user@192.168.1.10
+
+# Push and also fan out skills/rules/agents to other agent CLIs on the remote
+aisync ship --apply --yes --also codex,gemini user@192.168.1.10
+
+# Pull ~/.claude back from another machine
+aisync ship --pull user@192.168.1.10
+```
+
+What it does:
+- Strips runtime data (sessions, history, plugin caches, AppleDouble) — only portable config is shipped
+- Rewrites macOS paths to Linux paths (`/Users/<u>` → `/home/<u>`) in `settings.json` / `.mcp.json`
+- Drops local-bound hooks (sweatshop bridges, localhost HTTP) and macOS-only paths (`/opt/homebrew/...`) — anything that wouldn't work on the remote
+- Fan-out to other tools is delete-aware: rules/skills you wrote by hand on the target survive (managed-marker tracking); only files this tool installed previously can be removed
+- Atomic install on the remote with restore-on-error rollback; credentials are NOT shipped by default (run `claude login` per-machine)
+
+`aisync ship --help` for the full flag list. The pipeline (5 helpers in `share/skills/aisync-ship/scripts/`) is also exposed as a Claude Code skill — see [`SKILL.md`](share/skills/aisync-ship/SKILL.md) for the LLM-driven workflow.
+
 ## Source Layout
 
 ```

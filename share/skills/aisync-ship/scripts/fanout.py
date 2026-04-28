@@ -9,8 +9,10 @@ Two deployment modes:
   B) Stage-for-ship mode:   --out-base <stage_dir> writes into <stage_dir>/<subdir>
                             (used by ship.sh --also <list>)
 
-Platform map mirrors src/platforms.rs (kept here in Python for Phase 1's
-"do not modify Rust src/" constraint; Phase 3 will collapse them).
+Platform map mirrors src/platforms.rs (kept here in Python — Phase 2's
+Rust port (src/ship.rs) is a thin shell-out wrapper that bakes this
+file via include_str!, so no duplication of the platform map yet.
+A future full Rust rewrite of fanout could collapse them).
 """
 
 from __future__ import annotations

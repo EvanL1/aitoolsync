@@ -29,7 +29,7 @@ User says any of:
 ## When NOT to use
 
 - For project-level `.agents/` rule sync between AI tools (Claude/Codex/Gemini/Cursor/...) — use `aisync sync` instead. This skill is **user-level** (`~/.claude` → `~/.<other-tool>`), not project-level.
-- For pulling configuration FROM a remote source onto this machine — Phase 3 (`--pull`), not yet implemented.
+- For pulling configuration FROM a remote source onto this machine, use `ship.sh --pull <user@host>` (reverse direction; Phase 2). It's mutually exclusive with `--also` and `--include-credentials`.
 
 ## Pre-flight checklist (MUST execute before any transfer)
 
@@ -92,7 +92,7 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 ## Decision points (require user confirmation, do NOT default)
 
 - **Include credentials**: **default OFF.** The user's standing preference is one `claude login` per machine — do not ship Keychain credentials unless they explicitly ask. If asked, use `--include-credentials`.
-- **Wipe remote-only files (mirror mode)**: default OFF. Phase 2 will add `--mirror`.
+- **Wipe remote-only files (mirror mode)**: superseded by Phase 2 marker-based delete propagation. fan-out targets get precise per-file delete based on the `.aisync-ship-managed` marker; user-authored files in dest are preserved automatically.
 - **Plugin cache cleanup on remote**: ship.sh already excludes `plugins/` so the staged side is clean; remote `plugins/cache/` survives unless user asks to wipe.
 
 ## Anti-patterns (what NOT to do)

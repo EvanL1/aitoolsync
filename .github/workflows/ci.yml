@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 jobs:
-  check:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,3 +15,35 @@ jobs:
       - run: cargo check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+
+  ship-helpers:
+    # Validate the share/skills/aisync-ship/scripts/ pipeline (used by both
+    # the standalone Claude Code skill and src/ship.rs). 27+21 unit tests
+    # cover the pure-functional Python helpers + install-remote.sh state
+    # machine — no SSH or remote needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Syntax check shell helpers
+        run: |
+          bash -n share/skills/aisync-ship/scripts/ship.sh
+          sh -n share/skills/aisync-ship/scripts/install-remote.sh
+          bash -n share/skills/aisync-ship/scripts/extract-credentials.sh
+      - name: Compile-check Python helpers
+        run: |
+          python3 -m py_compile share/skills/aisync-ship/scripts/fanout.py
+          python3 -m py_compile share/skills/aisync-ship/scripts/transform-settings.py
+      - name: shellcheck (if available)
+        run: |
+          command -v shellcheck >/dev/null 2>&1 || sudo apt-get install -y shellcheck
+          shellcheck share/skills/aisync-ship/scripts/ship.sh \
+                     share/skills/aisync-ship/scripts/install-remote.sh \
+                     share/skills/aisync-ship/scripts/extract-credentials.sh \
+            || echo "shellcheck warnings (non-fatal)"
+      - name: Run fanout unit tests
+        run: python3 -m unittest tests.test_fanout -v
+      - name: Run install-remote integration tests
+        run: bash tests/test_install_remote.sh

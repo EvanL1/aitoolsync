@@ -3,3 +3,4 @@ npm/bin/aisync.exe
 npm/node_modules/
 *.pyc
 __pycache__/
+tests/__pycache__/
