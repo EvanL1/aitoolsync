@@ -176,12 +176,18 @@ def transform_mcp(data: dict, opts: argparse.Namespace, log: list) -> None:
         _mcp_warn_strings(cfg, name, log)
 
 
-def rewrite_paths(obj: Any, src_user: str, dst_user: str) -> Any:
+def rewrite_paths(obj: Any, src_user: str, dst_user: str, reverse: bool = False) -> Any:
+    """Default direction (push, macOS → Linux): /Users/<src> → /home/<dst>.
+    Reverse direction (pull, Linux → macOS): /home/<src> → /Users/<dst>."""
     if isinstance(obj, dict):
-        return {k: rewrite_paths(v, src_user, dst_user) for k, v in obj.items()}
+        return {k: rewrite_paths(v, src_user, dst_user, reverse) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [rewrite_paths(v, src_user, dst_user) for v in obj]
+        return [rewrite_paths(v, src_user, dst_user, reverse) for v in obj]
     if isinstance(obj, str):
+        if reverse:
+            return obj.replace(f"/home/{src_user}/", f"/Users/{dst_user}/").replace(
+                f"/home/{src_user}", f"/Users/{dst_user}"
+            )
         return obj.replace(f"/Users/{src_user}/", f"/home/{dst_user}/").replace(
             f"/Users/{src_user}", f"/home/{dst_user}"
         )
@@ -202,6 +208,8 @@ def parse_args() -> argparse.Namespace:
                    action="store_false", default=True)
     p.add_argument("--no-path-rewrite", dest="path_rewrite",
                    action="store_false", default=True)
+    p.add_argument("--reverse", action="store_true", default=False,
+                   help="Reverse path rewrite direction (pull: /home → /Users)")
     p.add_argument("--log", dest="log", default="-",
                    help="path for human-readable transformation log (default stderr)")
     return p.parse_args()
@@ -239,8 +247,11 @@ def main() -> int:
     transform_hooks(data, opts, log)
     transform_mcp(data, opts, log)
     if opts.path_rewrite:
-        log.append("[path-rewrite] /Users/%s -> /home/%s" % (opts.src_user, opts.dst_user))
-        data = rewrite_paths(data, opts.src_user, opts.dst_user)
+        if opts.reverse:
+            log.append("[path-rewrite] /home/%s -> /Users/%s" % (opts.src_user, opts.dst_user))
+        else:
+            log.append("[path-rewrite] /Users/%s -> /home/%s" % (opts.src_user, opts.dst_user))
+        data = rewrite_paths(data, opts.src_user, opts.dst_user, reverse=opts.reverse)
     write_json(opts.out, data)
     emit_log(log, opts.log)
     return 0

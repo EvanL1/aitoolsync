@@ -54,6 +54,7 @@ ALLOW_MISSING_CLAUDE=0
 ALSO_PLATFORMS=""        # comma-separated, empty = no fan-out
 REQUIRE_CLAUDE=0         # 1 = die when remote claude is missing (default: warn-only)
 ASSUME_YES=0             # 1 = skip confirm_apply prompt (CI / scripted use)
+PULL_SOURCE=""           # non-empty = reverse direction (--pull <user@host>)
 REMOTE_HOME=""
 REMOTE_USER=""
 REMOTE_EXISTING="no"
@@ -89,6 +90,12 @@ Options:
                           For CI / scripted use only — interactive operators
                           should review the dry-run plan first.
                           Env: AISYNC_SHIP_YES=1 has the same effect.
+  --pull <user@host>      REVERSE direction: pull <user@host>:~/.claude → local
+                          ~/.claude (atomic mv with backup). Useful for
+                          provisioning a new machine from an existing one.
+                          Mutually exclusive with --also and --include-credentials.
+                          Local ~/.claude (including sessions/history) is
+                          BACKED UP — review the dry-run plan carefully.
   --keep-stage            Keep /tmp staging dir after --apply (default: clean).
   --source-dir <path>     Override source dir (default: $HOME/.claude).
   --allow-missing-claude  (Deprecated alias; warning is now the default.)
@@ -117,13 +124,21 @@ parse_args() {
       --require-claude) REQUIRE_CLAUDE=1; shift ;;
       --also) ALSO_PLATFORMS="$2"; shift 2 ;;
       --yes|-y) ASSUME_YES=1; shift ;;
+      --pull) PULL_SOURCE="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown flag: $1 (try --help)" ;;
       *)  [[ -z "$TARGET" ]] || die "extra arg: $1"; TARGET="$1"; shift ;;
     esac
   done
-  [[ -n "$TARGET" ]] || { usage >&2; exit 2; }
-  [[ -d "$SOURCE_DIR" ]] || die "source dir not found: $SOURCE_DIR"
+  if [[ -n "$PULL_SOURCE" ]]; then
+    # In pull mode TARGET is unused; reject conflicting flags
+    [[ -z "$ALSO_PLATFORMS" ]] || die "--pull is incompatible with --also"
+    [[ "$INCLUDE_CREDS" -eq 0 ]] || die "--pull is incompatible with --include-credentials"
+    [[ -z "$TARGET" ]] || die "--pull and a positional target are mutually exclusive"
+  else
+    [[ -n "$TARGET" ]] || { usage >&2; exit 2; }
+    [[ -d "$SOURCE_DIR" ]] || die "source dir not found: $SOURCE_DIR"
+  fi
   [[ -f "${SCRIPT_DIR}/install-remote.sh" ]] \
     || die "missing companion script: ${SCRIPT_DIR}/install-remote.sh"
   [[ -f "${SCRIPT_DIR}/transform-settings.py" ]] \
@@ -460,6 +475,14 @@ post_smoke() {
 
 main() {
   parse_args "$@"
+  if [[ -n "$PULL_SOURCE" ]]; then
+    main_pull
+  else
+    main_push
+  fi
+}
+
+main_push() {
   preflight
   make_stage
   stage_copy_via_tar
@@ -479,6 +502,150 @@ main() {
   transfer
   cleanup_stage
   post_smoke
+  log "Done."
+}
+
+# ---- Pull (reverse direction) ----------------------------------------------
+#
+# Tar-pipes <source>:~/.claude back into a local stage, transforms paths
+# from /home/<src> → /Users/<dst>, then runs install-remote.sh locally
+# (HOME=$HOME) for the same atomic mv-with-backup semantics as a push.
+#
+# Caveats (printed to user in print_plan_pull):
+#   - Local ~/.claude is BACKED UP to ~/.claude.bak.<ts> and replaced
+#     wholesale (replace mode). Local sessions/, history.jsonl,
+#     plugins/ etc. move to the backup; restore by mv if needed.
+#   - Credentials are NEVER pulled. Run `claude login` locally after.
+#   - No fan-out is done in pull (single direction, single tool).
+
+preflight_pull() {
+  log "preflight pull: ssh -n $PULL_SOURCE ..."
+  # NB: use `echo` instead of `printf "%s\n"` — some remote /bin/sh
+  # implementations (busybox, certain dash builds) print the literal
+  # `\n` rather than a newline, which would mash setlocale stderr
+  # into the parsed values (e.g. REMOTE_HOME=/home/evannbash:...).
+  local script='set -eu
+[ -d "$HOME/.claude" ] || { echo PULL_NO_CLAUDE >&2; exit 11; }
+echo "home=$HOME"
+echo "user=$(id -un)"
+echo "size=$(du -s "$HOME/.claude" 2>/dev/null | cut -f1)"'
+  local out
+  if ! out=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$PULL_SOURCE" "$script" 2>&1); then
+    die "ssh to $PULL_SOURCE failed or source has no ~/.claude: $out"
+  fi
+  # Strip noise lines (setlocale warnings, etc.) before parsing — only
+  # accept fully-formed key=value lines we expect.
+  REMOTE_HOME=$(printf '%s\n' "$out" | sed -n 's/^home=//p' | tail -1)
+  REMOTE_USER=$(printf '%s\n' "$out" | sed -n 's/^user=//p' | tail -1)
+  local remote_size; remote_size=$(printf '%s\n' "$out" | sed -n 's/^size=//p' | tail -1)
+  [[ -n "$REMOTE_HOME" && -n "$REMOTE_USER" ]] \
+    || die "could not parse remote preflight output: $out"
+  log "pull source: $PULL_SOURCE home=$REMOTE_HOME user=$REMOTE_USER (~$((remote_size / 1024)) MB at source, before excludes)"
+}
+
+pull_via_tar() {
+  STAGE_PARENT=$(mktemp -d -t aisync-pull-XXXXXX)
+  STAGE_DIR="${STAGE_PARENT}/.claude"
+  mkdir -p "$STAGE_DIR"
+  log "pull-stage: $STAGE_DIR"
+  # Build a single-string exclude list for the remote tar invocation.
+  local exclude_args=""
+  local e
+  for e in "${TAR_EXCLUDES[@]}"; do
+    exclude_args="$exclude_args $e"
+  done
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$PULL_SOURCE" \
+      "cd \"\$HOME/.claude\" && COPYFILE_DISABLE=1 tar $exclude_args -czf - ." \
+    | tar -C "$STAGE_DIR" -xzf -
+  log "pulled $(find "$STAGE_DIR" -type f | wc -l | tr -d ' ') files, $(du -sh "$STAGE_DIR" | awk '{print $1}')"
+}
+
+# Pull-side transform: source is REMOTE (Linux), dest is LOCAL (macOS).
+# transform-settings.py --reverse rewrites /home/<remote-user> → /Users/<local-user>.
+transform_files_pull() {
+  local local_user; local_user=$(id -un)
+  local rel
+  for rel in "${TRANSFORM_FILES[@]}"; do
+    local path="${STAGE_DIR}/${rel}"
+    [[ -f "$path" ]] || continue
+    local tmp="${path}.transformed"
+    "${SCRIPT_DIR}/transform-settings.py" \
+      --in "$path" --out "$tmp" \
+      --src-user "$REMOTE_USER" --dst-user "$local_user" --reverse \
+      --log "${STAGE_PARENT}/transform-${rel}.log"
+    if cmp -s "$path" "$tmp"; then
+      rm -f "$tmp"
+      log "transform: $rel (no changes)"
+    else
+      mv "$tmp" "$path"
+      log "transform: $rel (reverse rewrite applied)"
+    fi
+  done
+}
+
+print_plan_pull() {
+  log "============================================"
+  log "PLAN ($MODE, PULL direction)"
+  log "  source:    $PULL_SOURCE ($REMOTE_HOME/.claude)"
+  log "  dest:      LOCAL $HOME/.claude (will be backed up to .claude.bak.<ts>)"
+  log "  staged:    $STAGE_DIR"
+  log "  files:     $(find "$STAGE_DIR" -type f | wc -l | tr -d ' ')"
+  log "  size:      $(du -sh "$STAGE_DIR" | awk '{print $1}')"
+  log "  excludes:  $(((${#TAR_EXCLUDES[@]}) / 2)) patterns"
+  log "  install:   atomic mv-swap (LOCAL); credentials NOT pulled"
+  log "  WARNING:   local sessions/ history.jsonl plugins/ move to backup"
+  log "             — restore via: mv ~/.claude.bak.<ts>/sessions ~/.claude/"
+  local f
+  for f in "${TRANSFORM_FILES[@]}"; do
+    local lf="${STAGE_PARENT}/transform-${f}.log"
+    [[ -f "$lf" ]] || continue
+    log "--- pull transform log: $f ---"
+    sed 's/^/[ship][xform] /' "$lf" >&2
+  done
+  log "============================================"
+}
+
+install_local() {
+  cp "${SCRIPT_DIR}/install-remote.sh" "${STAGE_PARENT}/install-remote.sh"
+  chmod 0755 "${STAGE_PARENT}/install-remote.sh"
+  printf '.claude\t.claude\treplace\n' > "${STAGE_PARENT}/manifest.tsv"
+  ( umask 077 && sh "${STAGE_PARENT}/install-remote.sh" \
+                       "${STAGE_PARENT}/manifest.tsv" "${STAGE_PARENT}" )
+}
+
+post_smoke_local() {
+  local out first
+  if out=$(claude --version 2>&1); then
+    first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1 || true)
+    [[ -n "$first" ]] || first="(empty output)"
+    log "  ✓ claude (local): $first"
+  else
+    warn "  ✗ claude (local): not present or errored — run 'claude login' to bootstrap"
+  fi
+}
+
+main_pull() {
+  preflight_pull
+  pull_via_tar
+  transform_files_pull
+  print_plan_pull
+  if [[ "$MODE" == "dry-run" ]]; then
+    log "DRY-RUN: stopping before local install."
+    log "Inspect staged files at: $STAGE_DIR"
+    log "Re-run with --apply when ready (will backup + replace local ~/.claude)."
+    exit 0
+  fi
+  printf 'Proceed with pull from %s, OVERWRITING local ~/.claude (backup will be created)? [y/N] ' "$PULL_SOURCE" >&2
+  if [[ "$ASSUME_YES" -eq 1 || "${AISYNC_SHIP_YES:-0}" == "1" ]]; then
+    log "confirm: skipped (--yes)"
+  else
+    read -r ans
+    [[ "$ans" =~ ^[Yy]$ ]] || die "aborted by user"
+  fi
+  install_local
+  cleanup_stage
+  log "smoke test: claude on LOCAL"
+  post_smoke_local
   log "Done."
 }
 

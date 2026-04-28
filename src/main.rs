@@ -1,6 +1,7 @@
 mod platforms;
 mod remote;
 mod server;
+mod ship;
 mod sync;
 
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ fn main() {
         "serve" => cmd_serve(&args[1..]),
         "pull" => cmd_pull(&args[1..]),
         "remote" => cmd_remote(&args[1..]),
+        "ship" => std::process::exit(ship::run(&args[1..])),
         "platforms" | "ls" => cmd_platforms(),
         "help" | "h" | "--help" | "-h" => cmd_help(),
         "version" | "-v" | "--version" => println!("aisync {}", env!("CARGO_PKG_VERSION")),
@@ -328,6 +330,8 @@ fn cmd_help() {
     println!("  remote add <alias> <user@host>  Register SSH remote");
     println!("  remote push [alias|--all]       Push .agents/ via SSH");
     println!("  remote list       List registered remotes");
+    println!("  ship [args...]    Cross-machine ~/.claude push/pull");
+    println!("                    `aisync ship --help` for full options");
     println!("  platforms         List supported platforms");
     println!("  help              Show this help\n");
     println!("Flags:");
