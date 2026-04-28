@@ -116,11 +116,30 @@ def replace_subtree(target_dir: Path, log: list, dry_run: bool, label: str) -> N
         shutil.rmtree(target_dir)
 
 
+def container_is_unsafe(container: Path, label: str, log: list) -> bool:
+    """A container dir (rules/, skills/, agents/) inside the source root
+    is "unsafe" if it's itself a symlink. is_dir() follows symlinks, so
+    glob/iterdir would happily list and copy contents from a symlink
+    target outside the source — silently leaking external data into
+    fan-out destinations. Refuse and warn."""
+    if container.is_symlink():
+        try:
+            tgt = os.readlink(container)
+        except OSError:
+            tgt = "<unreadable>"
+        log.append(f"  WARN ({label}): SKIPPED symlinked container {container} -> {tgt} "
+                   f"(refusing to dereference; move contents into source if intended)")
+        return True
+    return False
+
+
 def copy_rules(src_root: Path, dest_dir: Path, rules_subdir: Optional[str],
                ext: str, log: list, dry_run: bool) -> int:
     if not rules_subdir:
         return 0
     rules_src = src_root / "rules"
+    if container_is_unsafe(rules_src, "rules", log):
+        return 0
     if not rules_src.is_dir():
         return 0
     files = sorted(rules_src.glob("*.md"))
@@ -140,6 +159,8 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
     if not skills_subdir:
         return 0
     skills_src = src_root / "skills"
+    if container_is_unsafe(skills_src, "skills", log):
+        return 0
     if not skills_src.is_dir():
         return 0
     target_root = dest_dir / skills_subdir
@@ -192,6 +213,8 @@ def copy_agents(src_root: Path, dest_dir: Path, agents_subdir: Optional[str],
     if not agents_subdir:
         return 0
     agents_src = src_root / "agents"
+    if container_is_unsafe(agents_src, "agents", log):
+        return 0
     if not agents_src.is_dir():
         return 0
     files = sorted(agents_src.glob("*.md"))
