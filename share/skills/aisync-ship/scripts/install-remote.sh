@@ -200,6 +200,23 @@ $dest|$backup|$mode"
         grep -vxFf "$new_marker" "$old_marker" 2>/dev/null \
           | while read -r rel; do
               case "$rel" in '#'*|'') continue ;; esac
+              # Reject path traversal, absolute paths, backslash injection.
+              # Wrap with /…/ so the case patterns can spot ".." or "."
+              # as full segments anywhere in the path.
+              unsafe=0
+              case "$rel" in
+                ''|/*) unsafe=1 ;;
+                *\\*) unsafe=1 ;;
+              esac
+              if [ "$unsafe" -eq 0 ]; then
+                case "/$rel/" in
+                  *'/../'*|*'/./'*|*'//'*) unsafe=1 ;;
+                esac
+              fi
+              if [ "$unsafe" -eq 1 ]; then
+                printf 'install-remote: marker-delete REJECTED unsafe path %s\n' "$rel" >&2
+                continue
+              fi
               if [ -e "$dest/$rel" ] || [ -L "$dest/$rel" ]; then
                 rm -rf "$dest/$rel"
                 printf 'install-remote: marker-delete %s\n' "$dest/$rel" >&2

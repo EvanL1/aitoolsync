@@ -297,6 +297,20 @@ def read_marker(dest_dir: Path) -> list[str]:
     return paths
 
 
+def is_safe_rel(rel: str) -> bool:
+    """Reject marker entries that could escape dest via path traversal,
+    absolute paths, or backslash injection. Any single bad entry could
+    let `dest / rel` resolve OUTSIDE dest_dir and our rm/rmtree would
+    happily delete unrelated user data. Be paranoid — markers can come
+    from a tampered source/dest disk."""
+    if not rel or rel != rel.strip():
+        return False
+    if rel.startswith("/") or "\\" in rel or "\x00" in rel:
+        return False
+    parts = rel.split("/")
+    return all(p and p != "." and p != ".." for p in parts)
+
+
 def apply_marker_deletions(dest_dir: Path, old_managed: list[str],
                            new_managed: list[str], log: list) -> int:
     """Delete files in dest that we previously installed (in old marker) but
@@ -307,6 +321,10 @@ def apply_marker_deletions(dest_dir: Path, old_managed: list[str],
     to_delete = sorted(set(old_managed) - set(new_managed))
     n = 0
     for rel in to_delete:
+        if not is_safe_rel(rel):
+            log.append(f"  marker-delete REJECTED unsafe path: {rel!r} "
+                       f"(absolute, traversal, or null byte)")
+            continue
         target = dest_dir / rel
         if not target.exists() and not target.is_symlink():
             continue
@@ -337,19 +355,34 @@ def fanout_one(src_root: Path, platform: str, dest_dir: Path,
         "agents":  copy_agents(src_root, dest_dir, p["agents_dir"], log, dry_run),
     }
     counts["total"] = sum(counts.values())
-    if counts["total"] > 0 and not dry_run:
+    if not dry_run:
         # Marker-based delete propagation:
         #   - OLD marker = what WE installed last time (user-authored never recorded)
         #   - NEW managed set = what we just installed THIS run, computed from
         #     source (NOT from walking dest, which would include round-1
         #     leftovers + user-authored files and break the diff).
         #   - Delete (old - new): previous installs that are no longer in source.
-        old_managed = read_marker(dest_dir)
+        # IMPORTANT: do NOT gate on counts["total"] > 0. If source goes
+        # totally empty for this platform but dest has an old marker, we
+        # must still propagate the deletion — otherwise stale entries
+        # accumulate forever once source drops everything for a platform.
+        old_managed = read_marker(dest_dir) if dest_dir.exists() else []
         new_managed = plan_managed_paths(src_root, p)
-        deleted = apply_marker_deletions(dest_dir, old_managed, new_managed, log)
-        if deleted:
-            log.append(f"  marker-delete: removed {deleted} stale entries")
-        write_marker(dest_dir, platform, new_managed, log)
+        if old_managed or new_managed:
+            if not dest_dir.exists():
+                dest_dir.mkdir(parents=True)
+            deleted = apply_marker_deletions(dest_dir, old_managed, new_managed, log)
+            if deleted:
+                log.append(f"  marker-delete: removed {deleted} stale entries")
+            if new_managed:
+                write_marker(dest_dir, platform, new_managed, log)
+            elif old_managed:
+                # Everything we previously installed is gone; remove marker
+                # too so dest_dir is back to a clean slate from our POV.
+                marker = dest_dir / MARKER_FILENAME
+                if marker.exists():
+                    marker.unlink()
+                    log.append(f"  marker-delete: removed marker {marker}")
     return counts
 
 
