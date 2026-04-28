@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.0] - 2026-04-28
+
+### Added — `aisync ship` cross-machine `~/.claude` synchronization
+
+The big one in this release: a new `aisync ship` subcommand for syncing user-level Claude Code config (`~/.claude/`) across machines, plus optional fan-out to other agent CLIs (`~/.codex`, `~/.gemini`, `~/.cursor`, `~/.codeium/windsurf`, `~/.cline`). Target only needs `ssh` + `tar` + `sh`.
+
+Three call modes:
+- **Push** to a new machine: `aisync ship --apply --yes user@host`
+- **Push + fan out** to other CLIs: `aisync ship --apply --yes --also codex,gemini user@host`
+- **Pull** from another machine: `aisync ship --pull user@host`
+
+Pipeline guarantees:
+- Runtime data excluded (sessions, history.jsonl, plugin caches, AppleDouble) — only portable config is shipped
+- Path rewrite `/Users/<u>` → `/home/<u>` in `settings.json` / `.mcp.json` (and `--reverse` for pull)
+- Local-bound hooks (sweatshop bridges, localhost HTTP) and macOS-only paths (`/opt/homebrew/...`) stripped — `--strict` for unrecognised local paths too
+- Cross-tool fan-out is delete-aware (managed-marker tracking): rules/skills written by hand on the target survive
+- Atomic install on remote with restore-on-error rollback (per-platform); `mkdir`-based concurrent-run lock
+- Credentials NOT shipped by default (per-machine `claude login` is the contract); `--include-credentials` opt-in
+
+The full pipeline is implemented as 5 helpers under `share/skills/aisync-ship/scripts/` (also published as a Claude Code skill at `share/skills/aisync-ship/SKILL.md`). The Rust binary embeds them via `include_str!` and unpacks at runtime to a mode-700 tmpdir, so the single `aisync` binary contains the entire pipeline. Unix-only via `cfg(unix)` (Windows builds get a friendly stub).
+
+### Added — testing & CI
+
+- 31 Python unit tests (`tests/test_fanout.py`) covering pure-functional helpers: `is_safe_rel` (path traversal validation), `plan_managed_paths`, `apply_marker_deletions`, `container_is_unsafe`, marker round-trip, `--strict` mode behavior
+- 22 shell integration tests (`tests/test_install_remote.sh`) covering 9 scenarios of `install-remote.sh`'s state machine: merge preserve, replace atomic swap, multi-platform rollback, `.partial` GC, orphan dir rollback, marker delete propagation, REJECTED unsafe paths, snapshot-fail dest preservation, concurrent-run lock
+- New `ship-helpers` CI job alongside the existing `rust` job: bash/sh syntax check, `python3 -m py_compile`, optional `shellcheck`, both test suites
+
+### Fixed
+- `clippy::needless_borrows_for_generic_args` warning surfaced by rustc 1.95.0 (`src/sync.rs:550` had been failing CI silently before the new `ship-helpers` job exposed it)
+
 ## [0.5.0] - 2026-04-07
 
 ### Added
