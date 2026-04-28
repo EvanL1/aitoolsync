@@ -90,6 +90,19 @@ def copy_root_md(src_root: Path, dest_dir: Path, target_name: Optional[str],
     return 1
 
 
+def replace_subtree(target_dir: Path, log: list, dry_run: bool, label: str) -> None:
+    """Owned-subtree replace: clear target_dir before populating it.
+    Used by A-mode (this file's direct copy) so deletion-propagation
+    matches what C-mode (install-remote.sh) does. Only called when the
+    source has at least one entry (evidence-based ownership)."""
+    if dry_run:
+        log.append(f"  {label}-replace: would clear {target_dir} before copy")
+        return
+    if target_dir.exists():
+        log.append(f"  {label}-replace: clearing {target_dir}")
+        shutil.rmtree(target_dir)
+
+
 def copy_rules(src_root: Path, dest_dir: Path, rules_subdir: Optional[str],
                ext: str, log: list, dry_run: bool) -> int:
     if not rules_subdir:
@@ -97,12 +110,14 @@ def copy_rules(src_root: Path, dest_dir: Path, rules_subdir: Optional[str],
     rules_src = src_root / "rules"
     if not rules_src.is_dir():
         return 0
-    n = 0
-    for f in sorted(rules_src.glob("*.md")):
-        target = dest_dir / rules_subdir / f"{f.stem}.{ext}"
-        copy_file(f, target, log, dry_run, "rule")
-        n += 1
-    return n
+    files = sorted(rules_src.glob("*.md"))
+    if not files:
+        return 0
+    target_root = dest_dir / rules_subdir
+    replace_subtree(target_root, log, dry_run, "rules")
+    for f in files:
+        copy_file(f, target_root / f"{f.stem}.{ext}", log, dry_run, "rule")
+    return len(files)
 
 
 def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
@@ -112,22 +127,32 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
     skills_src = src_root / "skills"
     if not skills_src.is_dir():
         return 0
+    target_root = dest_dir / skills_subdir
     n = 0
     if as_dir:
-        for sd in sorted(p for p in skills_src.iterdir() if p.is_dir()):
-            if not (sd / "SKILL.md").exists():
-                continue
-            target_dir = dest_dir / skills_subdir / sd.name
+        skill_dirs = [sd for sd in sorted(skills_src.iterdir())
+                      if sd.is_dir() and (sd / "SKILL.md").exists()]
+        if not skill_dirs:
+            return 0
+        replace_subtree(target_root, log, dry_run, "skills")
+        for sd in skill_dirs:
+            target_dir = target_root / sd.name
             log.append(f"  skill-dir: {sd} -> {target_dir}")
             if not dry_run:
                 target_dir.parent.mkdir(parents=True, exist_ok=True)
-                if target_dir.exists():
-                    shutil.rmtree(target_dir)
-                shutil.copytree(sd, target_dir)
+                # symlinks=True: a symlink inside ~/.claude/skills/<name>
+                # (e.g. -> /tmp/secret) must NOT be dereferenced during
+                # fan-out — preserve it as a symlink so we don't materialize
+                # arbitrary local paths into other tools' user dirs.
+                shutil.copytree(sd, target_dir, symlinks=True)
             n += 1
     else:
-        for sm in sorted(skills_src.rglob("SKILL.md")):
-            target = dest_dir / skills_subdir / f"{sm.parent.name}.md"
+        skill_files = sorted(skills_src.rglob("SKILL.md"))
+        if not skill_files:
+            return 0
+        replace_subtree(target_root, log, dry_run, "skills")
+        for sm in skill_files:
+            target = target_root / f"{sm.parent.name}.md"
             copy_file(sm, target, log, dry_run, "skill-flat")
             n += 1
     return n
@@ -140,11 +165,14 @@ def copy_agents(src_root: Path, dest_dir: Path, agents_subdir: Optional[str],
     agents_src = src_root / "agents"
     if not agents_src.is_dir():
         return 0
-    n = 0
-    for f in sorted(agents_src.glob("*.md")):
-        copy_file(f, dest_dir / agents_subdir / f.name, log, dry_run, "agent")
-        n += 1
-    return n
+    files = sorted(agents_src.glob("*.md"))
+    if not files:
+        return 0
+    target_root = dest_dir / agents_subdir
+    replace_subtree(target_root, log, dry_run, "agents")
+    for f in files:
+        copy_file(f, target_root / f.name, log, dry_run, "agent")
+    return len(files)
 
 
 def fanout_one(src_root: Path, platform: str, dest_dir: Path,

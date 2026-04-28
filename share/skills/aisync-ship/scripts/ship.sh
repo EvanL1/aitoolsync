@@ -297,11 +297,26 @@ collect_stage_subdirs() {
 # Stream stage (manifest + install-remote.sh + all platform subdirs); the
 # remote untars to a tmpdir then runs install-remote.sh (atomic per-platform
 # mv with cross-platform rollback).
+#
+# Tmpdir hardening on the REMOTE:
+#   - umask 077 so the tmpdir is mode 700 (settings.json + possible
+#     credentials are NOT readable by other users on the remote).
+#   - mktemp -d (preferred) creates an unpredictable path; the previous
+#     `mkdir -p $TMPDIR/aisync-ship-$$` was both PID-predictable and
+#     happily reused a stale tmpdir from an interrupted run, which would
+#     overlay old staged files into the new install.
+#   - mkdir (NO -p) fallback when mktemp is missing fails on collision
+#     instead of silently merging.
 transfer() {
   local bootstrap='set -eu
-tmp="${TMPDIR:-/tmp}/aisync-ship-$$"
-trap "rm -rf $tmp" EXIT HUP INT TERM
-mkdir -p "$tmp"
+umask 077
+if command -v mktemp >/dev/null 2>&1; then
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/aisync-ship.XXXXXX")
+else
+  tmp="${TMPDIR:-/tmp}/aisync-ship.$$.$(date +%s 2>/dev/null || echo n)"
+  mkdir "$tmp"
+fi
+trap "rm -rf \"$tmp\"" EXIT HUP INT TERM
 tar xzf - -C "$tmp"
 sh "$tmp/install-remote.sh" "$tmp/manifest.tsv" "$tmp"'
   local subs=()

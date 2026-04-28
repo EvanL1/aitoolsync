@@ -108,6 +108,13 @@ Both `settings.json` AND `.mcp.json` are passed through the same transformer; `.
 
 `fanout.py` mirrors `~/.claude/`'s portable parts (root MD, `rules/`, `skills/`, `agents/`) into other agent CLIs' user dirs per `src/platforms.rs`. **What is NOT fanned out** (Claude-specific format, would corrupt other tools): `settings.json`, `.mcp.json`, `hooks/`, `commands/`, `lib/`, `scripts/`, `statusline-command.sh`, `.credentials.json`.
 
+> ⚠️ **Subtree ownership** — fan-out claims **full ownership** of `rules/`, `skills/`, `agents/` subtrees on the target for every platform you include in `--also` / `--to-platforms`, but only when the source actually has content for that subtree (evidence-based — see `fanout.py`'s `replace_subtree`). Concretely: if you fan out to codex and your source has 7 rules, the resulting `~/.codex/rules/` will contain **exactly those 7 rules**. Any rule that lived in `~/.codex/rules/` independently (e.g. one you wrote by hand against Codex specifically) will be **deleted**. Files in dest **outside** those subtrees (`~/.codex/auth.json`, `config.toml`, `sessions/`, `memories/`) are preserved.
+>
+> **Implications**:
+> - To preserve a tool-specific rule on the fan-out target, move it into `~/.claude/rules/` so the source becomes authoritative.
+> - To not have your codex/gemini/cursor independent setup mass-edited, simply don't include that platform in `--also` / `--to-platforms`.
+> - Symlinks inside `~/.claude/skills/<name>/` are preserved as symlinks (not dereferenced) — fan-out will not silently materialize symlink targets into other tools' dirs.
+
 Fan-out target detection: `fanout.py` (no flags) auto-detects which agent user_dirs exist on this host (e.g., if `~/.cursor/` exists, Cursor is in scope). Override with `--to-platforms <list>` or `--all-platforms`.
 
 Per-platform mapping (from `platforms.rs`):
