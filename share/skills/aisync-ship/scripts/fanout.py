@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -71,12 +72,25 @@ def detect_present_platforms(home: Path) -> list[str]:
     return out
 
 
-def copy_file(src: Path, dst: Path, log: list, dry_run: bool, label: str) -> None:
+def copy_file(src: Path, dst: Path, log: list, dry_run: bool, label: str) -> bool:
+    """Copy a single file. Returns True iff actually copied (not skipped).
+    Symlinks are SKIPPED with a warning — we never dereference + materialize
+    a symlink target (could be a secret, cache, or external dir the user
+    did not intend to share via fan-out)."""
+    if src.is_symlink():
+        try:
+            tgt = os.readlink(src)
+        except OSError:
+            tgt = "<unreadable>"
+        log.append(f"  WARN ({label}): SKIPPED symlink {src} -> {tgt} "
+                   f"(refusing to dereference; copy the target into source if intended)")
+        return False
     log.append(f"  {label}: {src} -> {dst}")
     if dry_run:
-        return
+        return True
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    shutil.copy2(src, dst, follow_symlinks=False)  # belt+suspenders
+    return True
 
 
 def copy_root_md(src_root: Path, dest_dir: Path, target_name: Optional[str],
@@ -86,8 +100,7 @@ def copy_root_md(src_root: Path, dest_dir: Path, target_name: Optional[str],
     src_md = src_root / "CLAUDE.md"
     if not src_md.exists():
         return 0
-    copy_file(src_md, dest_dir / target_name, log, dry_run, "root-md")
-    return 1
+    return 1 if copy_file(src_md, dest_dir / target_name, log, dry_run, "root-md") else 0
 
 
 def replace_subtree(target_dir: Path, log: list, dry_run: bool, label: str) -> None:
@@ -115,9 +128,11 @@ def copy_rules(src_root: Path, dest_dir: Path, rules_subdir: Optional[str],
         return 0
     target_root = dest_dir / rules_subdir
     replace_subtree(target_root, log, dry_run, "rules")
+    n = 0
     for f in files:
-        copy_file(f, target_root / f"{f.stem}.{ext}", log, dry_run, "rule")
-    return len(files)
+        if copy_file(f, target_root / f"{f.stem}.{ext}", log, dry_run, "rule"):
+            n += 1
+    return n
 
 
 def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
@@ -130,8 +145,23 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
     target_root = dest_dir / skills_subdir
     n = 0
     if as_dir:
-        skill_dirs = [sd for sd in sorted(skills_src.iterdir())
-                      if sd.is_dir() and (sd / "SKILL.md").exists()]
+        # Walk skill candidates; reject symlinked skill DIRS at the top level
+        # because copytree(src, dst, symlinks=True) would still dereference
+        # src itself if src is a symlink (symlinks=True only preserves
+        # symlinks INSIDE src). A symlinked top-level skill dir could point
+        # at /etc or any external tree.
+        skill_dirs = []
+        for sd in sorted(skills_src.iterdir()):
+            if sd.is_symlink():
+                try:
+                    tgt = os.readlink(sd)
+                except OSError:
+                    tgt = "<unreadable>"
+                log.append(f"  WARN (skill): SKIPPED symlinked skill dir {sd} -> {tgt} "
+                           f"(refusing to dereference)")
+                continue
+            if sd.is_dir() and (sd / "SKILL.md").exists():
+                skill_dirs.append(sd)
         if not skill_dirs:
             return 0
         replace_subtree(target_root, log, dry_run, "skills")
@@ -140,10 +170,9 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
             log.append(f"  skill-dir: {sd} -> {target_dir}")
             if not dry_run:
                 target_dir.parent.mkdir(parents=True, exist_ok=True)
-                # symlinks=True: a symlink inside ~/.claude/skills/<name>
-                # (e.g. -> /tmp/secret) must NOT be dereferenced during
-                # fan-out — preserve it as a symlink so we don't materialize
-                # arbitrary local paths into other tools' user dirs.
+                # symlinks=True: symlinks INSIDE ~/.claude/skills/<name>/
+                # are preserved as symlinks (not dereferenced). The top-level
+                # sd is guaranteed to be a real dir by the symlink-check above.
                 shutil.copytree(sd, target_dir, symlinks=True)
             n += 1
     else:
@@ -153,8 +182,8 @@ def copy_skills(src_root: Path, dest_dir: Path, skills_subdir: Optional[str],
         replace_subtree(target_root, log, dry_run, "skills")
         for sm in skill_files:
             target = target_root / f"{sm.parent.name}.md"
-            copy_file(sm, target, log, dry_run, "skill-flat")
-            n += 1
+            if copy_file(sm, target, log, dry_run, "skill-flat"):
+                n += 1
     return n
 
 
@@ -170,9 +199,11 @@ def copy_agents(src_root: Path, dest_dir: Path, agents_subdir: Optional[str],
         return 0
     target_root = dest_dir / agents_subdir
     replace_subtree(target_root, log, dry_run, "agents")
+    n = 0
     for f in files:
-        copy_file(f, target_root / f.name, log, dry_run, "agent")
-    return len(files)
+        if copy_file(f, target_root / f.name, log, dry_run, "agent"):
+            n += 1
+    return n
 
 
 def fanout_one(src_root: Path, platform: str, dest_dir: Path,
