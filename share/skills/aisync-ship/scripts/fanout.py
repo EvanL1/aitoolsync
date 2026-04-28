@@ -449,34 +449,37 @@ def main() -> int:
         log.append(f"[{plat}] dest={dest_dir}")
         counts = fanout_one(src, plat, dest_dir, log, opts.dry_run)
         summary[plat] = counts
-        if counts["total"] > 0:
-            # Fan-out targets use merge mode + owned-subtree replace.
-            #
-            # "merge" alone (cp -aR staged/. dest/) preserves the target tool's
-            # auth.json/config.toml/sessions but never deletes anything in dest
-            # — so removing a rule or skill at the source side leaves a stale
-            # copy in the fan-out target forever (config drift).
-            #
-            # The 4th column lists subtrees we own outright: install-remote.sh
-            # rm -rf's them in dest before merging so deletions propagate, but
-            # only within those subtrees. Everything else in dest is preserved.
-            #
-            # CRITICAL: ownership is EVIDENCE-BASED, not declarative. We list
-            # only subtrees we actually wrote to stage this run (counts > 0).
-            # If we declared ownership of `rules` whenever the platform has a
-            # rules_dir — even when source has no rules — install-remote would
-            # rm dest/rules without rewriting it, deleting the user's existing
-            # rules that have nothing to do with this fan-out invocation.
-            p = PLATFORMS[plat]
-            owned = []
-            if p["rules_dir"] and counts["rules"] > 0:
-                owned.append(p["rules_dir"])
-            if p["skills_dir"] and counts["skills"] > 0:
-                owned.append(p["skills_dir"])
-            if p["agents_dir"] and counts["agents"] > 0:
-                owned.append(p["agents_dir"])
-            owned_csv = ",".join(owned)
-            manifest_lines.append(f"{sub}\t{sub}\tmerge\t{owned_csv}")
+        if not opts.manifest:
+            # A-mode (no manifest): fanout_one already wrote marker + did
+            # delete propagation directly against the real dest. Nothing
+            # else to do per platform.
+            continue
+        # C-mode (manifest-driven, used by ship.sh):
+        # Always emit a manifest line + ensure stage_dir + a marker file
+        # exist for THIS platform — even if source produced no content.
+        # Without this, going from "had content" to "empty source" wouldn't
+        # reach install-remote.sh: no manifest line ⇒ no remote stage_sub
+        # ⇒ no chance to run marker-based delete propagation against the
+        # remote dest, and stale entries persist on the remote forever.
+        if not opts.dry_run:
+            new_managed = plan_managed_paths(src, PLATFORMS[plat])
+            if not dest_dir.exists():
+                dest_dir.mkdir(parents=True)
+            if not (dest_dir / MARKER_FILENAME).exists():
+                write_marker(dest_dir, plat, new_managed, log)
+        # owned_csv stays evidence-based (Phase 1 fallback for old
+        # install-remote.sh that doesn't know about markers). New
+        # install-remote.sh sees the marker and ignores owned_csv.
+        p = PLATFORMS[plat]
+        owned = []
+        if p["rules_dir"] and counts["rules"] > 0:
+            owned.append(p["rules_dir"])
+        if p["skills_dir"] and counts["skills"] > 0:
+            owned.append(p["skills_dir"])
+        if p["agents_dir"] and counts["agents"] > 0:
+            owned.append(p["agents_dir"])
+        owned_csv = ",".join(owned)
+        manifest_lines.append(f"{sub}\t{sub}\tmerge\t{owned_csv}")
     log.append(f"# summary: {json.dumps(summary)}")
     emit_log(log, opts.log)
     if opts.manifest:
