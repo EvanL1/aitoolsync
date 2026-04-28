@@ -318,5 +318,46 @@ class PlatformsMapTests(unittest.TestCase):
             self.assertIn(required, fanout.PLATFORMS)
 
 
+class StrictModeTests(unittest.TestCase):
+    """transform-settings.py --strict: upgrade LIKELY_LOCAL warnings to strips."""
+
+    def setUp(self):
+        # Load transform-settings module the same way as fanout
+        global transform
+        spec = importlib.util.spec_from_file_location(
+            "transform_settings", SCRIPTS / "transform-settings.py"
+        )
+        transform = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(transform)
+
+    def test_default_does_not_strip_likely_local(self):
+        # /Users/evan/Documents/foo is LIKELY_LOCAL but not a known-bad pattern.
+        # Default mode should NOT strip the hook.
+        self.assertFalse(transform.is_local_command(
+            "/Users/evan/Documents/foo.sh", strict=False))
+
+    def test_strict_strips_likely_local(self):
+        self.assertTrue(transform.is_local_command(
+            "/Users/evan/Documents/foo.sh", strict=True))
+
+    def test_known_bad_stripped_in_both_modes(self):
+        # sweatshop and macOS-only roots are always stripped
+        for cmd in ("/Users/evan/dev/sweatshop/bin/x", "/opt/homebrew/bin/y",
+                    "/Library/Foo", "/Applications/X.app/bin"):
+            self.assertTrue(transform.is_local_command(cmd, strict=False), cmd)
+            self.assertTrue(transform.is_local_command(cmd, strict=True), cmd)
+
+    def test_portable_paths_never_stripped(self):
+        # $HOME-based paths and our known-portable subpaths should pass through
+        for cmd in ("$HOME/.claude/hooks/foo.py",
+                    "/Users/evan/.claude/scripts/foo.sh",  # whitelisted prefix
+                    "/usr/local/bin/uvx"):  # /usr/local is normal
+            self.assertFalse(transform.is_local_command(cmd, strict=False), cmd)
+            # In strict mode whitelisted .claude/ paths still pass; /usr/local
+            # not in LIKELY_LOCAL_RE so passes too
+            if "/Users/" not in cmd or "/.claude/" in cmd or "/.local/" in cmd:
+                self.assertFalse(transform.is_local_command(cmd, strict=True), cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

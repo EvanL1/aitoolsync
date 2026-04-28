@@ -55,6 +55,8 @@ ALSO_PLATFORMS=""        # comma-separated, empty = no fan-out
 REQUIRE_CLAUDE=0         # 1 = die when remote claude is missing (default: warn-only)
 ASSUME_YES=0             # 1 = skip confirm_apply prompt (CI / scripted use)
 PULL_SOURCE=""           # non-empty = reverse direction (--pull <user@host>)
+STRICT_MODE=0            # 1 = upgrade WARN local paths to strict-strip
+LOCKDIR=""               # set by acquire_lock; cleaned up on exit
 REMOTE_HOME=""
 REMOTE_USER=""
 REMOTE_EXISTING="no"
@@ -96,6 +98,13 @@ Options:
                           Mutually exclusive with --also and --include-credentials.
                           Local ~/.claude (including sessions/history) is
                           BACKED UP — review the dry-run plan carefully.
+  --strict                Upgrade machine-specific local-path warnings (paths
+                          like /Users/<u>/Documents/foo, /opt/homebrew/...
+                          referenced from hooks/MCP entries) from WARN to
+                          STRIP. Default is warn-only; --strict is for CI/
+                          scripted runs where any unrecognised local path
+                          should be dropped rather than path-rewritten and
+                          shipped (where it would be broken on the remote).
   --keep-stage            Keep /tmp staging dir after --apply (default: clean).
   --source-dir <path>     Override source dir (default: $HOME/.claude).
   --allow-missing-claude  (Deprecated alias; warning is now the default.)
@@ -125,6 +134,7 @@ parse_args() {
       --also) ALSO_PLATFORMS="$2"; shift 2 ;;
       --yes|-y) ASSUME_YES=1; shift ;;
       --pull) PULL_SOURCE="$2"; shift 2 ;;
+      --strict) STRICT_MODE=1; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown flag: $1 (try --help)" ;;
       *)  [[ -z "$TARGET" ]] || die "extra arg: $1"; TARGET="$1"; shift ;;
@@ -200,10 +210,13 @@ transform_one() {
   local path="${STAGE_DIR}/${rel}"
   [[ -f "$path" ]] || return 0
   local tmp="${path}.transformed"
+  local extra_args=()
+  [[ "$STRICT_MODE" -eq 1 ]] && extra_args+=(--strict)
   "${SCRIPT_DIR}/transform-settings.py" \
     --in "$path" --out "$tmp" \
     --src-user "$SRC_USER" --dst-user "$REMOTE_USER" \
-    --log "${STAGE_PARENT}/transform-${rel}.log"
+    --log "${STAGE_PARENT}/transform-${rel}.log" \
+    "${extra_args[@]}"
   if cmp -s "$path" "$tmp"; then
     rm -f "$tmp"
     log "transform: $rel (no changes)"
@@ -218,6 +231,32 @@ transform_files() {
   for rel in "${TRANSFORM_FILES[@]}"; do
     transform_one "$rel"
   done
+}
+
+# Acquire a per-target lock so two `aisync ship --apply` runs against the
+# same target can't race (manifest race, double atomic-mv, .partial collision).
+# Uses mkdir for atomic POSIX semantics — works on macOS + Linux without flock.
+# Skipped in --dry-run since no destructive ops happen.
+acquire_lock() {
+  [[ "$MODE" == "dry-run" ]] && return
+  local key
+  if [[ -n "$PULL_SOURCE" ]]; then
+    key="$PULL_SOURCE"
+  else
+    key="$TARGET"
+  fi
+  # Sanitize key for filesystem use
+  local safe
+  safe=$(printf '%s' "$key" | tr -c 'a-zA-Z0-9._-' '_')
+  LOCKDIR="${TMPDIR:-/tmp}/aisync-ship.${safe}.lock"
+  if ! mkdir "$LOCKDIR" 2>/dev/null; then
+    die "another aisync ship is already running for $key
+       lock dir: $LOCKDIR
+       remove it manually if you're sure no other run is in progress"
+  fi
+  # Cleanup on exit, signal, or die
+  trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT HUP INT TERM
+  log "lock acquired: $LOCKDIR"
 }
 
 include_credentials() {
@@ -483,6 +522,7 @@ main() {
 }
 
 main_push() {
+  acquire_lock
   preflight
   make_stage
   stage_copy_via_tar
@@ -569,10 +609,13 @@ transform_files_pull() {
     local path="${STAGE_DIR}/${rel}"
     [[ -f "$path" ]] || continue
     local tmp="${path}.transformed"
+    local extra_args=()
+    [[ "$STRICT_MODE" -eq 1 ]] && extra_args+=(--strict)
     "${SCRIPT_DIR}/transform-settings.py" \
       --in "$path" --out "$tmp" \
       --src-user "$REMOTE_USER" --dst-user "$local_user" --reverse \
-      --log "${STAGE_PARENT}/transform-${rel}.log"
+      --log "${STAGE_PARENT}/transform-${rel}.log" \
+      "${extra_args[@]}"
     if cmp -s "$path" "$tmp"; then
       rm -f "$tmp"
       log "transform: $rel (no changes)"
@@ -625,6 +668,7 @@ post_smoke_local() {
 }
 
 main_pull() {
+  acquire_lock
   preflight_pull
   pull_via_tar
   transform_files_pull

@@ -54,9 +54,22 @@ def is_macos_only_path(s: str) -> bool:
     return any(r.search(s or "") for r in MACOS_ONLY_PATH_RES)
 
 
-def is_local_command(cmd: str) -> bool:
-    """Should this hook command be DROPPED entirely?"""
-    return is_sweatshop_path(cmd) or is_macos_only_path(cmd)
+def is_likely_local(s: str) -> bool:
+    """Soft signal: /Users/<u>/<not-portable-subpath>. Used by warn-only
+    scan and (when --strict) by the strip decision."""
+    return bool(s) and bool(LIKELY_LOCAL_RE.search(s))
+
+
+def is_local_command(cmd: str, strict: bool = False) -> bool:
+    """Should this hook command be DROPPED entirely?
+    Default: only known-bad patterns (sweatshop, macOS-only roots).
+    Strict: also drop anything that looks machine-specific (LIKELY_LOCAL).
+    """
+    if is_sweatshop_path(cmd) or is_macos_only_path(cmd):
+        return True
+    if strict and is_likely_local(cmd):
+        return True
+    return False
 
 
 def is_localhost_url(url: str) -> bool:
@@ -79,8 +92,11 @@ def hook_should_drop(h: dict, opts: argparse.Namespace) -> tuple[bool, str]:
     htype = h.get("type")
     if htype == "command" and opts.strip_local_hooks:
         cmd = h.get("command", "")
-        if is_local_command(cmd):
-            return True, f"local-bound command: {cmd[:80]}"
+        if is_local_command(cmd, strict=opts.strict):
+            reason = "local-bound command" if not opts.strict or not is_likely_local(cmd) \
+                or is_sweatshop_path(cmd) or is_macos_only_path(cmd) \
+                else "machine-specific path (strict mode)"
+            return True, f"{reason}: {cmd[:80]}"
     if htype == "http" and opts.strip_localhost_http:
         url = h.get("url", "")
         if is_localhost_url(url):
@@ -126,21 +142,22 @@ def transform_hooks(data: dict, opts: argparse.Namespace, log: list) -> None:
             log.append(f"  drop empty event {event}")
 
 
-def _mcp_bad_strings(cfg: dict) -> list[str]:
+def _mcp_bad_strings(cfg: dict, strict: bool) -> list[str]:
     """Collect strings under command/cwd/args/env-values that match a
-    known-bad pattern (sweatshop or macOS-only). Strict-strip targets only."""
+    known-bad pattern (sweatshop or macOS-only). With --strict, also
+    flags LIKELY_LOCAL paths."""
     bad: list[str] = []
     for key in ("command", "cwd"):
         v = cfg.get(key)
-        if isinstance(v, str) and is_local_command(v):
+        if isinstance(v, str) and is_local_command(v, strict=strict):
             bad.append(f"{key}={v}")
     for a in cfg.get("args", []) or []:
-        if isinstance(a, str) and is_local_command(a):
+        if isinstance(a, str) and is_local_command(a, strict=strict):
             bad.append(f"args={a}")
     env = cfg.get("env") or {}
     if isinstance(env, dict):
         for ek, ev in env.items():
-            if isinstance(ev, str) and is_local_command(ev):
+            if isinstance(ev, str) and is_local_command(ev, strict=strict):
                 bad.append(f"env.{ek}={ev}")
     return bad
 
@@ -167,7 +184,7 @@ def transform_mcp(data: dict, opts: argparse.Namespace, log: list) -> None:
     log.append("[mcpServers]")
     for name in list(servers.keys()):
         cfg = servers[name] or {}
-        bad = _mcp_bad_strings(cfg)
+        bad = _mcp_bad_strings(cfg, strict=opts.strict)
         if bad:
             log.append(f"  drop server '{name}': {bad[0][:120]}")
             del servers[name]
@@ -210,6 +227,10 @@ def parse_args() -> argparse.Namespace:
                    action="store_false", default=True)
     p.add_argument("--reverse", action="store_true", default=False,
                    help="Reverse path rewrite direction (pull: /home → /Users)")
+    p.add_argument("--strict", action="store_true", default=False,
+                   help="Upgrade WARN local-path hits to STRIP. Hooks/MCP "
+                        "entries containing /Users/<u>/<non-portable-subpath> "
+                        "are dropped instead of just warned about.")
     p.add_argument("--log", dest="log", default="-",
                    help="path for human-readable transformation log (default stderr)")
     return p.parse_args()

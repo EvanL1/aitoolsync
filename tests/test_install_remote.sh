@@ -240,6 +240,30 @@ test_snapshot_fail_dest_intact() {
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Test 9: --apply lock prevents concurrent runs
+# ---------------------------------------------------------------------------
+test_concurrent_lock_blocks_second_run() {
+  echo "== test_concurrent_lock_blocks_second_run =="
+  local SHIP=$REPO/share/skills/aisync-ship/scripts/ship.sh
+  # Pre-create the lockdir to simulate a concurrent run holding it
+  local fake_target="evan@unreachable.example"
+  local safe; safe=$(printf '%s' "$fake_target" | tr -c 'a-zA-Z0-9._-' '_')
+  local lock="${TMPDIR:-/tmp}/aisync-ship.${safe}.lock"
+  mkdir -p "$lock"
+  # Try to run --apply; ship.sh dies at acquire_lock (BEFORE preflight
+  # so unreachable target doesn't even get ssh'd to). Capture output
+  # first then grep — pipefail would mask grep's exit 0 with ship.sh's
+  # exit 1.
+  local out; out=$("$SHIP" --apply --yes --no-credentials "$fake_target" 2>&1 || true)
+  if printf '%s' "$out" | grep -q "another aisync ship is already running"; then
+    PASS=$((PASS + 1)); CASES+=("  ✓ second run blocked by lock")
+  else
+    FAIL=$((FAIL + 1)); CASES+=("  ✗ second run NOT blocked. Output: $out")
+  fi
+  rmdir "$lock" 2>/dev/null || true
+}
+
 test_merge_preserves_non_owned
 test_replace_atomic_swap
 test_rollback_multi_platform_bad_mode
@@ -248,6 +272,7 @@ test_orphan_intermediate_dir_rollback
 test_marker_based_delete
 test_marker_delete_rejects_traversal
 test_snapshot_fail_dest_intact
+test_concurrent_lock_blocks_second_run
 
 echo
 echo "==================================="
