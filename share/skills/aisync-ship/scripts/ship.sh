@@ -280,7 +280,66 @@ print_plan() {
   done
   log "--- settings.json unified diff (source vs staged) ---"
   diff -u "$SOURCE_DIR/settings.json" "$STAGE_DIR/settings.json" >&2 || true
+  print_deletion_preview
   log "============================================"
+}
+
+# Show, in the dry-run/print-plan phase, exactly which files install-remote.sh
+# would marker-delete on the remote when --apply runs. Computed by fetching
+# the remote marker via ssh and diffing locally — no destructive op happens.
+# Edge cases handled:
+#   - --also empty: skip (no fan-out targets, no preview).
+#   - .claude (replace mode): skip (replace doesn't use markers).
+#   - remote marker missing: print "first install" note, no diff.
+#   - ssh fetch fails: print "unavailable", non-fatal.
+#   - traversal/absolute paths in remote marker: tag [REJECTED unsafe]
+#     so the operator sees what install-remote.sh would refuse.
+print_deletion_preview() {
+  [[ -z "$ALSO_PLATFORMS" ]] && return
+  [[ -n "$MANIFEST_FANOUT" && -f "$MANIFEST_FANOUT" ]] || return
+  log "--- deletion preview (what install-remote.sh would marker-delete) ---"
+  while IFS=$'\t' read -r ssub _ mode _; do
+    [[ -z "$ssub" || "$ssub" == \#* ]] && continue
+    [[ "$mode" == "merge" ]] || continue
+    local new_marker="${STAGE_PARENT}/${ssub}/.aisync-ship-managed"
+    [[ -f "$new_marker" ]] || continue
+    local remote_path="${REMOTE_HOME}/${ssub}/.aisync-ship-managed"
+    local old_content
+    if ! old_content=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" \
+                          "cat \"$remote_path\" 2>/dev/null" 2>/dev/null); then
+      log "  [$ssub] preview unavailable (could not fetch remote marker)"
+      continue
+    fi
+    if [[ -z "$old_content" ]]; then
+      log "  [$ssub] first marker-aware install on remote — no deletions"
+      continue
+    fi
+    local diff_output
+    diff_output=$(diff <(printf '%s\n' "$old_content" | grep -v '^#' | grep -v '^$' | sort -u) \
+                       <(grep -v '^#' "$new_marker" | grep -v '^$' | sort -u) 2>/dev/null \
+                  | grep '^<' | sed 's/^< //' || true)
+    if [[ -z "$diff_output" ]]; then
+      log "  [$ssub] no marker-deletions (remote marker matches new managed set)"
+      continue
+    fi
+    local count; count=$(printf '%s\n' "$diff_output" | grep -c '^.')
+    log "  [$ssub] will marker-delete $count entry/entries on remote:"
+    local shown=0
+    printf '%s\n' "$diff_output" | while IFS= read -r rel; do
+      [[ -z "$rel" ]] && continue
+      shown=$((shown + 1))
+      [[ $shown -gt 15 ]] && { log "      ... ($((count - 15)) more not shown)"; break; }
+      # Mirror install-remote.sh's safety check
+      local tag="[DEL]"
+      case "$rel" in
+        ''|/*|*\\*) tag="[REJECTED unsafe]" ;;
+      esac
+      [[ "$tag" == "[DEL]" ]] && case "/$rel/" in
+        *'/../'*|*'/./'*|*'//'*) tag="[REJECTED unsafe]" ;;
+      esac
+      log "      $tag $rel"
+    done
+  done < "$MANIFEST_FANOUT"
 }
 
 # ---- Transfer ---------------------------------------------------------------
@@ -348,6 +407,47 @@ cleanup_stage() {
   fi
 }
 
+# Post-apply smoke test: ssh into the remote and check `<binary> --version`
+# for each platform we just installed. Never fails the script — purely
+# informational. Aligns with the warn-and-proceed default for missing
+# claude on the remote.
+#
+# Skipped: cursor / windsurf / cline (GUI tools, no headless --version).
+# Always: claude (since .claude is always shipped).
+# Plus:   codex/gemini if --also includes them.
+post_smoke() {
+  local cmds=(claude)
+  if [[ -n "$ALSO_PLATFORMS" ]]; then
+    local OLD_IFS="$IFS"; IFS=','
+    for plat in $ALSO_PLATFORMS; do
+      IFS="$OLD_IFS"
+      case "$plat" in
+        codex|gemini) cmds+=("$plat") ;;
+        cursor|windsurf|cline) ;;
+        *) warn "smoke-test: unknown platform '$plat', skipping" ;;
+      esac
+      OLD_IFS="$IFS"; IFS=','
+    done
+    IFS="$OLD_IFS"
+  fi
+  log "smoke test: ${cmds[*]} on $TARGET"
+  local cmd out first
+  for cmd in "${cmds[@]}"; do
+    if out=$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 "$TARGET" \
+                  "$cmd --version 2>&1" 2>&1); then
+      # Strip bash setlocale warnings (and any blank lines) so the first
+      # surviving line is the actual --version output.
+      first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1)
+      [[ -n "$first" ]] || first="(empty output)"
+      log "  ✓ $cmd: $first"
+    else
+      first=$(printf '%s\n' "$out" | grep -v -E 'setlocale|^$' | head -1)
+      [[ -n "$first" ]] || first="(no error output)"
+      warn "  ✗ $cmd: not present or errored ($first)"
+    fi
+  done
+}
+
 # ---- main -------------------------------------------------------------------
 
 main() {
@@ -370,9 +470,8 @@ main() {
   confirm_apply
   transfer
   cleanup_stage
-  log "Done. Suggested smoke test:"
-  log "  ssh $TARGET 'claude --version && ls -la ~/.claude/.credentials.json'"
-  log "  ssh $TARGET 'echo hi | claude -p \"say hi\"'"
+  post_smoke
+  log "Done."
 }
 
 main "$@"
