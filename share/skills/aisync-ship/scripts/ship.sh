@@ -53,6 +53,7 @@ KEEP_STAGE=0
 ALLOW_MISSING_CLAUDE=0
 ALSO_PLATFORMS=""        # comma-separated, empty = no fan-out
 REQUIRE_CLAUDE=0         # 1 = die when remote claude is missing (default: warn-only)
+ASSUME_YES=0             # 1 = skip confirm_apply prompt (CI / scripted use)
 REMOTE_HOME=""
 REMOTE_USER=""
 REMOTE_EXISTING="no"
@@ -84,6 +85,10 @@ Options:
                           the remote. Comma-separated platform names (codex,
                           gemini, cursor, windsurf, cline). Hooks/settings/.mcp
                           are NOT fanned out (Claude-specific format).
+  --yes, -y               Skip the interactive "Proceed with transfer?" prompt.
+                          For CI / scripted use only — interactive operators
+                          should review the dry-run plan first.
+                          Env: AISYNC_SHIP_YES=1 has the same effect.
   --keep-stage            Keep /tmp staging dir after --apply (default: clean).
   --source-dir <path>     Override source dir (default: $HOME/.claude).
   --allow-missing-claude  (Deprecated alias; warning is now the default.)
@@ -111,6 +116,7 @@ parse_args() {
       --allow-missing-claude) ALLOW_MISSING_CLAUDE=1; shift ;;
       --require-claude) REQUIRE_CLAUDE=1; shift ;;
       --also) ALSO_PLATFORMS="$2"; shift 2 ;;
+      --yes|-y) ASSUME_YES=1; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown flag: $1 (try --help)" ;;
       *)  [[ -z "$TARGET" ]] || die "extra arg: $1"; TARGET="$1"; shift ;;
@@ -280,6 +286,10 @@ print_plan() {
 # ---- Transfer ---------------------------------------------------------------
 
 confirm_apply() {
+  if [[ "$ASSUME_YES" -eq 1 || "${AISYNC_SHIP_YES:-0}" == "1" ]]; then
+    log "confirm: skipped (--yes / AISYNC_SHIP_YES=1)"
+    return
+  fi
   printf 'Proceed with transfer to %s? [y/N] ' "$TARGET" >&2
   read -r ans
   [[ "$ans" =~ ^[Yy]$ ]] || die "aborted by user"

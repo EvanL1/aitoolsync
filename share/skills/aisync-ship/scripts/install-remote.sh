@@ -43,6 +43,10 @@ stage_root="${2:?stage root path required}"
 stamp=$(date +%Y%m%d-%H%M%S)
 # applied_pairs lines: <dest>|<backup>|<mode>     (backup is "" if dest didn't pre-exist)
 applied_pairs=""
+# Newly-created intermediate dirs (one per line, deepest first) — used by
+# restore_all to rmdir them on failure so we don't leave empty parents like
+# ~/.codeium when only `.codeium/windsurf` was being installed and aborted.
+created_intermediates=""
 
 restore_all() {
   rc=$?
@@ -69,6 +73,17 @@ restore_all() {
           fi
         done
   fi
+  if [ "$rc" -ne 0 ] && [ -n "$created_intermediates" ]; then
+    # rmdir is safe — only removes EMPTY dirs. If a successful sibling
+    # install populated this ancestor, rmdir will refuse and we leave it
+    # alone. Order is deepest-first thanks to how install_one prepends.
+    printf '%s\n' "$created_intermediates" | awk 'NF' \
+      | while read -r p; do
+          if rmdir "$p" 2>/dev/null; then
+            printf 'install-remote: removed orphan intermediate dir %s\n' "$p" >&2
+          fi
+        done
+  fi
   exit "$rc"
 }
 trap restore_all EXIT HUP INT TERM
@@ -90,6 +105,17 @@ install_one() {
     *) printf 'install-remote: invalid mode "%s" for %s\n' "$mode" "$stage_sub" >&2; exit 21 ;;
   esac
 
+  # GC: clear any stale .partial snapshots left by a previous failed run of
+  # THIS dest. They're diagnostic-only garbage and would not be reused
+  # (atomic rename in the snapshot path means a stale .partial is never
+  # consulted), but they accumulate on disk if not cleaned. Per-dest scope
+  # avoids touching unrelated paths.
+  for stale in "$dest".bak.*.partial; do
+    [ -e "$stale" ] || continue
+    printf 'install-remote: GC stale partial %s\n' "$stale" >&2
+    rm -rf "$stale"
+  done
+
   # .claude-only: preserve existing credential if staged has none
   if [ "$home_sub" = ".claude" ] \
      && [ -f "$dest/.credentials.json" ] \
@@ -98,6 +124,17 @@ install_one() {
     chmod 600 "$staged/.credentials.json"
     printf 'install-remote: preserved existing remote .credentials.json\n' >&2
   fi
+
+  # Track ancestors we're about to mkdir -p so restore_all can rmdir them
+  # on failure (safely — rmdir won't remove non-empty dirs).
+  parent=$(dirname "$dest")
+  walk="$parent"
+  while [ "$walk" != "/" ] && [ "$walk" != "." ] && [ -n "$walk" ] && [ ! -d "$walk" ]; do
+    # Prepend so rollback order is deepest-first
+    created_intermediates="$walk
+$created_intermediates"
+    walk=$(dirname "$walk")
+  done
 
   # Decide backup path WITHOUT creating it yet.
   backup=""
