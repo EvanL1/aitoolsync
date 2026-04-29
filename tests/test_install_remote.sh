@@ -251,17 +251,24 @@ test_concurrent_lock_blocks_second_run() {
   local safe; safe=$(printf '%s' "$fake_target" | tr -c 'a-zA-Z0-9._-' '_')
   local lock="${TMPDIR:-/tmp}/aisync-ship.${safe}.lock"
   mkdir -p "$lock"
-  # Try to run --apply; ship.sh dies at acquire_lock (BEFORE preflight
-  # so unreachable target doesn't even get ssh'd to). Capture output
-  # first then grep — pipefail would mask grep's exit 0 with ship.sh's
-  # exit 1.
-  local out; out=$("$SHIP" --apply --yes --no-credentials "$fake_target" 2>&1 || true)
+  # CI runners (and fresh Linux machines) don't have a real ~/.claude;
+  # ship.sh's parse_args dies on "source dir not found" BEFORE reaching
+  # acquire_lock unless --source-dir is given. Hand it a stub source so
+  # the lock check is what trips, not the validation.
+  local STUB; STUB=$(mktemp -d)
+  mkdir -p "$STUB/.claude"
+  echo "x" > "$STUB/.claude/CLAUDE.md"
+  # Capture output first then grep — pipefail would mask grep's exit 0
+  # with ship.sh's exit 1.
+  local out; out=$("$SHIP" --apply --yes --no-credentials \
+                            --source-dir "$STUB/.claude" "$fake_target" 2>&1 || true)
   if printf '%s' "$out" | grep -q "another aisync ship is already running"; then
     PASS=$((PASS + 1)); CASES+=("  ✓ second run blocked by lock")
   else
     FAIL=$((FAIL + 1)); CASES+=("  ✗ second run NOT blocked. Output: $out")
   fi
   rmdir "$lock" 2>/dev/null || true
+  rm -rf "$STUB"
 }
 
 test_merge_preserves_non_owned
